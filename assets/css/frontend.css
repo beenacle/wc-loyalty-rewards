@@ -1,0 +1,145 @@
+.wclr-account {
+    padding: 1em;
+    background: #fff;
+    border: 1px solid #e2e2e2;
+}
+
+.wclr-stats p {
+    margin: 0.2em 0;
+    font-weight: 600;
+}
+
+.wclr-referrals code {
+    display: inline-block;
+    padding: 4px 6px;
+    background: #f6f6f6;
+    border: 1px solid #e2e2e2;
+}
+
+.wclr-redeem-block {
+    margin: 1em 0;
+    padding: 1em;
+    background: #f9f9f9;
+    border: 1px solid #e2e2e2;
+}
+
+.wclr-redeem-block label {
+    display: block;
+    margin-bottom: 0.25em;
+}
+
+.wclr-auto-notice {
+    padding: 0.5em;
+    background: #e7f3ff;
+    border-left: 3px solid #0073aa;
+    margin: 0.5em 0;
+    font-size: 0.9em;
+}
+.wclr-redeem-block-wrapper {
+    width: 100%;
+}
+
+.wclr-reward-flash-wrapper {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 999999;
+    max-width: 350px;
+    min-width: 300px;
+    animation: wclr-slide-in 0.3s ease-out;
+}
+
+@keyframes wclr-slide-in {
+    from {
+        opacity: 0;
+        transform: translateX(100%);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+.wclr-reward-flash {
+    background: #fff;
+    border-left: 4px solid #00a32a;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    border-radius: 4px;
+    padding: 0;
+    position: relative;
+    transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.wclr-reward-close {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: transparent;
+    border: none;
+    font-size: 24px;
+    line-height: 1;
+    color: #666;
+    cursor: pointer;
+    padding: 0;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.2s ease;
+}
+
+.wclr-reward-close:hover {
+    color: #000;
+}
+
+.wclr-reward-content {
+    padding: 16px 20px 16px 16px;
+}
+
+.wclr-reward-title {
+    margin: 0 0 8px 0;
+    font-size: 16px;
+    line-height: 1.4;
+    color: #1d2327;
+}
+
+.wclr-reward-title strong {
+    color: #00a32a;
+    font-weight: 600;
+}
+
+.wclr-reward-detail {
+    margin: 6px 0;
+    font-size: 14px;
+    line-height: 1.5;
+    color: #50575e;
+}
+
+.wclr-reward-context {
+    margin: 8px 0 0 0;
+    font-size: 12px;
+    line-height: 1.4;
+    color: #8c8f94;
+    font-style: italic;
+}
+
+.wclr-fkcart-points .fkcart-summary-line-item {
+    padding: 6px 0;
+}
+
+.wclr-fkcart-points-note .fkcart-summary-text {
+    font-size: 13px;
+    color: #6b7280;
+}
+
+@media (max-width: 782px) {
+    .wclr-reward-flash-wrapper {
+        top: 10px;
+        right: 10px;
+        left: 10px;
+        max-width: none;
+        min-width: auto;
+    }
+}
+

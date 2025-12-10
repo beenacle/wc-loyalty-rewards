@@ -1,0 +1,27 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Env / secrets
+.env
+.env.*
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Dependencies
+vendor/
+node_modules/
+
+# Build & cache
+.cache/
+coverage/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.phpunit.result.cache
+
