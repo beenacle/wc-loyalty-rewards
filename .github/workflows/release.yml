@@ -26,6 +26,7 @@ jobs:
           rsync -a --delete \
             --exclude=".git*" \
             --exclude=".github" \
+            --exclude=".gitignore" \
             --exclude="dist" \
             --exclude="node_modules" \
             --exclude="DOCKER_ENV" \
@@ -33,6 +34,8 @@ jobs:
             --exclude="Dockerfile-php-build" \
             --exclude="*.log" \
             --exclude="output.log" \
+            --exclude="composer.lock" \
+            --exclude="CHANGELOG.md" \
             ./ dist/$SLUG/
           cd dist
           zip -r ${SLUG}.zip ${SLUG}
