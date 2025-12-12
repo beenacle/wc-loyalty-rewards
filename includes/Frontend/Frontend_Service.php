@@ -108,6 +108,20 @@ class Frontend_Service {
     }
 
     /**
+     * Format context string to Title Case.
+     *
+     * @param string $context The context string (e.g., "daily_visit_reward").
+     * @return string Formatted context (e.g., "Daily Visit Reward").
+     */
+    private function format_context( string $context ): string {
+        if ( empty( $context ) ) {
+            return '';
+        }
+        // Replace underscores with spaces and convert to title case
+        return ucwords( str_replace( '_', ' ', strtolower( $context ) ) );
+    }
+
+    /**
      * Render reward notice once per pending reward.
      */
     public function render_reward_notice_and_confetti(): void {
@@ -127,7 +141,7 @@ class Frontend_Service {
                     <p class="wclr-reward-detail"><?php echo esc_html( sprintf( __( 'Points earned: %d', 'wc-loyalty-rewards' ), $amount ) ); ?></p>
                     <p class="wclr-reward-detail"><?php echo esc_html( sprintf( __( 'New balance: %d', 'wc-loyalty-rewards' ), $balance ) ); ?></p>
                     <?php if ( $context ) : ?>
-                        <p class="wclr-reward-context"><?php echo esc_html( sprintf( __( 'Source: %s', 'wc-loyalty-rewards' ), ucfirst( str_replace( '_', ' ', $context ) ) ) ); ?></p>
+                        <p class="wclr-reward-context"><?php echo esc_html( sprintf( __( 'Source: %s', 'wc-loyalty-rewards' ), $this->format_context( $context ) ) ); ?></p>
                     <?php endif; ?>
                 </div>
             </div>
@@ -216,7 +230,15 @@ class Frontend_Service {
         $referrals = $this->referrals->get_referrals_for_user( $user_id );
         $code      = $this->referrals->get_referral_code( $user_id );
         $link      = $code ? add_query_arg( 'ref', $code, home_url() ) : '';
-        $recent    = $this->points->get_recent_ledger_entries( $user_id, 10 );
+
+        // Pagination setup
+        $per_page = 10;
+        $current_page = isset( $_GET['wclr_page'] ) ? max( 1, (int) $_GET['wclr_page'] ) : 1; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+        $offset = ( $current_page - 1 ) * $per_page;
+        $total_entries = $this->points->get_ledger_entries_count( $user_id );
+        $total_pages = max( 1, (int) ceil( $total_entries / $per_page ) );
+
+        $recent = $this->points->get_recent_ledger_entries( $user_id, $per_page, $offset );
         ?>
         <div class="wclr-account">
             <h2><?php esc_html_e( 'Your Loyalty & Rewards', 'wc-loyalty-rewards' ); ?></h2>
@@ -262,11 +284,78 @@ class Frontend_Service {
                                     <td><?php echo esc_html( ucfirst( $entry->type ) ); ?></td>
                                     <td><?php echo esc_html( $entry->amount ); ?></td>
                                     <td><?php echo esc_html( $entry->balance_after ); ?></td>
-                                    <td><?php echo esc_html( $entry->context ); ?></td>
+                                    <td><?php echo esc_html( $this->format_context( $entry->context ) ); ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         </tbody>
                     </table>
+
+                    <?php if ( $total_pages > 1 ) : ?>
+                        <div class="wclr-pagination" style="margin-top: 15px; text-align: center;">
+                            <?php
+                            $base_url = wc_get_endpoint_url( 'wclr-loyalty', '', wc_get_page_permalink( 'myaccount' ) );
+
+                            // Previous page link
+                            if ( $current_page > 1 ) :
+                                $prev_url = add_query_arg( 'wclr_page', $current_page - 1, $base_url );
+                                ?>
+                                <a href="<?php echo esc_url( $prev_url ); ?>" class="button" style="margin-right: 5px;"><?php esc_html_e( '← Previous', 'wc-loyalty-rewards' ); ?></a>
+                            <?php endif; ?>
+
+                            <?php
+                            // Page number links
+                            $start_page = max( 1, $current_page - 2 );
+                            $end_page = min( $total_pages, $current_page + 2 );
+
+                            if ( $start_page > 1 ) :
+                                $first_url = add_query_arg( 'wclr_page', 1, $base_url );
+                                ?>
+                                <a href="<?php echo esc_url( $first_url ); ?>" class="button" style="margin-right: 5px;">1</a>
+                                <?php if ( $start_page > 2 ) : ?>
+                                    <span style="margin-right: 5px;">...</span>
+                                <?php endif; ?>
+                            <?php endif; ?>
+
+                            <?php for ( $i = $start_page; $i <= $end_page; $i++ ) : ?>
+                                <?php if ( $i === $current_page ) : ?>
+                                    <span class="button" style="margin-right: 5px; background: #2271b1; color: #fff; cursor: default;"><?php echo esc_html( $i ); ?></span>
+                                <?php else : ?>
+                                    <?php $page_url = add_query_arg( 'wclr_page', $i, $base_url ); ?>
+                                    <a href="<?php echo esc_url( $page_url ); ?>" class="button" style="margin-right: 5px;"><?php echo esc_html( $i ); ?></a>
+                                <?php endif; ?>
+                            <?php endfor; ?>
+
+                            <?php if ( $end_page < $total_pages ) : ?>
+                                <?php if ( $end_page < $total_pages - 1 ) : ?>
+                                    <span style="margin-right: 5px;">...</span>
+                                <?php endif; ?>
+                                <?php $last_url = add_query_arg( 'wclr_page', $total_pages, $base_url ); ?>
+                                <a href="<?php echo esc_url( $last_url ); ?>" class="button" style="margin-right: 5px;"><?php echo esc_html( $total_pages ); ?></a>
+                            <?php endif; ?>
+
+                            <?php
+                            // Next page link
+                            if ( $current_page < $total_pages ) :
+                                $next_url = add_query_arg( 'wclr_page', $current_page + 1, $base_url );
+                                ?>
+                                <a href="<?php echo esc_url( $next_url ); ?>" class="button" style="margin-left: 5px;"><?php esc_html_e( 'Next →', 'wc-loyalty-rewards' ); ?></a>
+                            <?php endif; ?>
+
+                            <p style="margin-top: 10px; font-size: 0.9em; color: #666;">
+                                <?php
+                                echo esc_html(
+                                    sprintf(
+                                        /* translators: 1: current page, 2: total pages, 3: total entries */
+                                        __( 'Page %1$d of %2$d (%3$d total entries)', 'wc-loyalty-rewards' ),
+                                        $current_page,
+                                        $total_pages,
+                                        $total_entries
+                                    )
+                                );
+                                ?>
+                            </p>
+                        </div>
+                    <?php endif; ?>
                 <?php endif; ?>
             </div>
         </div>
@@ -380,7 +469,7 @@ class Frontend_Service {
                         <td><?php echo esc_html( ucfirst( $entry->type ) ); ?></td>
                         <td><?php echo esc_html( $entry->amount ); ?></td>
                         <td><?php echo esc_html( $entry->balance_after ); ?></td>
-                        <td><?php echo esc_html( $entry->context ); ?></td>
+                        <td><?php echo esc_html( $this->format_context( $entry->context ) ); ?></td>
                     </tr>
                 <?php endforeach; ?>
                 </tbody>

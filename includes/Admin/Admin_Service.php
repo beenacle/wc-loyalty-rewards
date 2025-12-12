@@ -134,6 +134,7 @@ class Admin_Service {
                 'include_shipping' => false,
                 'min_order'        => 0,
                 'refund_behavior'  => 'reverse',
+                'order_statuses'   => [ 'wc-completed' ], // Default to wc-completed (matches wc_get_order_statuses() format)
             ],
             'flash_earning'       => [
                 'enabled'     => false,
@@ -204,6 +205,15 @@ class Admin_Service {
 
         $oe                       = $input['order_earning'];
         $exclude_coupons_oe       = isset( $oe['exclude_coupons'] ) && is_array( $oe['exclude_coupons'] ) ? $oe['exclude_coupons'] : [];
+        $order_statuses_raw       = isset( $oe['order_statuses'] ) && is_array( $oe['order_statuses'] ) ? $oe['order_statuses'] : [ 'wc-completed' ];
+        // Get valid WooCommerce order statuses
+        $valid_statuses           = function_exists( 'wc_get_order_statuses' ) ? array_keys( wc_get_order_statuses() ) : [ 'pending', 'processing', 'on-hold', 'completed', 'cancelled', 'refunded', 'failed' ];
+        // Sanitize and filter order statuses to only include valid ones
+        $order_statuses_sanitized = array_intersect( array_map( 'sanitize_text_field', $order_statuses_raw ), $valid_statuses );
+        // Ensure at least one status is selected (default to wc-completed if empty)
+        if ( empty( $order_statuses_sanitized ) ) {
+            $order_statuses_sanitized = [ 'wc-completed' ];
+        }
         $input['order_earning']   = [
             'enabled'                => ! empty( $oe['enabled'] ),
             'include_tax'            => ! empty( $oe['include_tax'] ),
@@ -212,6 +222,7 @@ class Admin_Service {
             'refund_behavior'        => in_array( $oe['refund_behavior'] ?? 'reverse', [ 'reverse', 'prorate', 'ignore' ], true ) ? $oe['refund_behavior'] : 'reverse',
             'exclude_coupons_enabled'=> ! empty( $oe['exclude_coupons_enabled'] ),
             'exclude_coupons'        => array_map( 'sanitize_text_field', $exclude_coupons_oe ),
+            'order_statuses'         => array_values( $order_statuses_sanitized ), // Re-index array
         ];
 
         $flash                     = $input['flash_earning'];
@@ -361,7 +372,32 @@ class Admin_Service {
                             <table class="form-table" role="presentation">
                                 <tr>
                                     <th scope="row"><?php esc_html_e( 'Enable', 'wc-loyalty-rewards' ); ?></th>
-                                    <td><label><input type="checkbox" name="wclr_settings[order_earning][enabled]" value="1" <?php checked( ! empty( $settings['order_earning']['enabled'] ) ); ?> /> <?php esc_html_e( 'Earn points on completed orders', 'wc-loyalty-rewards' ); ?></label></td>
+                                    <td><label><input type="checkbox" name="wclr_settings[order_earning][enabled]" value="1" <?php checked( ! empty( $settings['order_earning']['enabled'] ) ); ?> /> <?php esc_html_e( 'Earn points on orders', 'wc-loyalty-rewards' ); ?></label></td>
+                                </tr>
+                                <tr>
+                                    <th scope="row"><?php esc_html_e( 'Order statuses', 'wc-loyalty-rewards' ); ?></th>
+                                    <td>
+                                        <?php
+                                        // Default to 'wc-completed' to match wc_get_order_statuses() format
+                                        // Handler will normalize for comparison (removes 'wc-' prefix)
+                                        $order_statuses = isset( $settings['order_earning']['order_statuses'] ) && is_array( $settings['order_earning']['order_statuses'] )
+                                            ? $settings['order_earning']['order_statuses']
+                                            : [ 'wc-completed' ];
+                                        $wc_statuses = function_exists( 'wc_get_order_statuses' ) ? wc_get_order_statuses() : [];
+                                        ?>
+                                        <select
+                                            name="wclr_settings[order_earning][order_statuses][]"
+                                            class="wc-enhanced-select"
+                                            multiple="multiple"
+                                            style="width: 100%;"
+                                            data-placeholder="<?php esc_attr_e( 'Select order statuses…', 'wc-loyalty-rewards' ); ?>"
+                                        >
+                                            <?php foreach ( $wc_statuses as $status_key => $status_label ) : ?>
+                                                <option value="<?php echo esc_attr( $status_key ); ?>" <?php selected( in_array( $status_key, $order_statuses, true ) ); ?>><?php echo esc_html( $status_label ); ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                        <p class="description"><?php esc_html_e( 'Select which order statuses should trigger points earning. Points will be awarded when an order reaches any of the selected statuses.', 'wc-loyalty-rewards' ); ?></p>
+                                    </td>
                                 </tr>
                                 <tr>
                                     <th scope="row"><?php esc_html_e( 'Include tax', 'wc-loyalty-rewards' ); ?></th>

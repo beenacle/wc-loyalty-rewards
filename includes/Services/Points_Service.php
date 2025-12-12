@@ -464,6 +464,11 @@ class Points_Service {
             return 0;
         }
 
+        // Prevent duplicate redemptions if points were already redeemed for this order.
+        if ( $order->get_meta( '_wclr_points_redeemed', true ) ) {
+            return 0;
+        }
+
         $balance = $this->get_user_balance( $user_id )->balance;
         $points  = min( $points_to_redeem, $balance );
         if ( $points <= 0 ) {
@@ -481,6 +486,10 @@ class Points_Service {
                 'order_id' => $order->get_id(),
             ]
         );
+
+        // Mark order as having points redeemed to prevent duplicate processing.
+        $order->update_meta_data( '_wclr_points_redeemed', $points );
+        $order->save();
 
         do_action( 'wc_loyalty_rewards_after_redeem_points', $user_id, $points, $order );
         return $points;
@@ -602,17 +611,32 @@ class Points_Service {
     }
 
     /**
+     * Get total count of ledger entries for a user.
+     *
+     * @param int $user_id User ID.
+     * @return int Total count of entries.
+     */
+    public function get_ledger_entries_count( int $user_id ): int {
+        global $wpdb;
+        $table = $wpdb->prefix . 'wclr_points_ledger';
+        $count = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$table} WHERE user_id = %d", $user_id ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        return $count;
+    }
+
+    /**
      * Get recent ledger entries for a user.
      *
      * @param int $user_id User ID.
      * @param int $limit   Number of entries to return.
+     * @param int $offset  Number of entries to skip (for pagination).
      * @return array<int, Points_Ledger>
      */
-    public function get_recent_ledger_entries( int $user_id, int $limit = 10 ): array {
+    public function get_recent_ledger_entries( int $user_id, int $limit = 10, int $offset = 0 ): array {
         global $wpdb;
         $table = $wpdb->prefix . 'wclr_points_ledger';
         $limit = max( 1, min( 100, $limit ) );
-        $rows  = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE user_id = %d ORDER BY created_at DESC, id DESC LIMIT %d", $user_id, $limit ), ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        $offset = max( 0, $offset );
+        $rows  = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE user_id = %d ORDER BY created_at DESC, id DESC LIMIT %d OFFSET %d", $user_id, $limit, $offset ), ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
         if ( empty( $rows ) ) {
             return [];
         }
