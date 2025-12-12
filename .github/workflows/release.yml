@@ -1,0 +1,38 @@
+name: Build Plugin ZIP
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: php-actions/composer@v6
+        with:
+          php_version: "8.2"
+          args: --no-dev --optimize-autoloader
+
+      - name: Build zip
+        run: |
+          SLUG=wc-loyalty-rewards
+          mkdir -p dist/$SLUG
+          rsync -a --delete \
+            --exclude=".git*" \
+            --exclude=".github" \
+            --exclude="dist" \
+            --exclude="node_modules" \
+            ./ dist/$SLUG/
+          cd dist
+          zip -r ${SLUG}.zip ${SLUG}
+
+      - name: Create Release + upload asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/wc-loyalty-rewards.zip

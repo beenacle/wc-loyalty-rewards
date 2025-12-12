@@ -17,6 +17,7 @@ vendor/
 node_modules/
 
 # Build & cache
+dist/
 .cache/
 coverage/
 *.log

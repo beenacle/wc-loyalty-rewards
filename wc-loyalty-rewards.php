@@ -3,7 +3,7 @@
  * Plugin Name: Loyalty & Rewards for WooCommerce
  * Plugin URI:  https://beenacle.com/
  * Description: Reusable loyalty and rewards system for WooCommerce with configurable earning, tiers, referrals, and redemption.
- * Version:     1.0.0
+ * Version:     1.0.1
  * Author:      Beenacle Technologies
  * Author URI:  https://beenacle.com/
  * Text Domain: wc-loyalty-rewards
@@ -26,6 +26,20 @@ if ( ! defined( 'WCLR_PLUGIN_DIR' ) ) {
 
 if ( ! defined( 'WCLR_PLUGIN_URL' ) ) {
     define( 'WCLR_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
+}
+
+// GitHub updates (no helper plugin needed).
+if ( file_exists( __DIR__ . '/vendor/autoload.php' ) ) {
+	require __DIR__ . '/vendor/autoload.php';
+
+	$uc = \YahnisElsts\PluginUpdateChecker\v5\PucFactory::buildUpdateChecker(
+		'https://github.com/beenacle/wc-loyalty-rewards/',
+		__FILE__,
+		'wc-loyalty-rewards'
+	);
+
+	// Use GitHub Release ZIP assets (recommended).
+	$uc->getVcsApi()->enableReleaseAssets();
 }
 
 // Simple PSR-4 style autoloader for this plugin.

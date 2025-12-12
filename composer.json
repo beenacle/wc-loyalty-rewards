@@ -1,0 +1,19 @@
+{
+    "name": "beenacle/wc-loyalty-rewards",
+    "description": "Reusable loyalty and rewards system for WooCommerce",
+    "type": "wordpress-plugin",
+    "license": "GPL-2.0-or-later",
+    "require": {
+        "php": ">=8.0",
+        "yahniselsts/plugin-update-checker": "^5.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "WCLR\\": "includes/"
+        }
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "sort-packages": true
+    }
+}
