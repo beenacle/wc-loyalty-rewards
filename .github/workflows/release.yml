@@ -28,6 +28,11 @@ jobs:
             --exclude=".github" \
             --exclude="dist" \
             --exclude="node_modules" \
+            --exclude="DOCKER_ENV" \
+            --exclude="docker_tag" \
+            --exclude="Dockerfile-php-build" \
+            --exclude="*.log" \
+            --exclude="output.log" \
             ./ dist/$SLUG/
           cd dist
           zip -r ${SLUG}.zip ${SLUG}

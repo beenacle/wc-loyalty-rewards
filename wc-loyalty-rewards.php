@@ -3,7 +3,7 @@
  * Plugin Name: Loyalty & Rewards for WooCommerce
  * Plugin URI:  https://beenacle.com/
  * Description: Reusable loyalty and rewards system for WooCommerce with configurable earning, tiers, referrals, and redemption.
- * Version:     1.0.2
+ * Version:     1.0.3
  * Author:      Beenacle Technologies
  * Author URI:  https://beenacle.com/
  * Text Domain: wc-loyalty-rewards
