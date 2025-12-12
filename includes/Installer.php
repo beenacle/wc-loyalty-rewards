@@ -120,6 +120,12 @@ class Installer {
                 'threshold' => 3,
                 'points'    => 50,
             ],
+            'birthday'             => [
+                'enabled'  => false,
+                'points'   => 150,
+                'meta_key' => 'birthday',
+                'format'   => 'Y-m-d',
+            ],
             'anniversary'           => [
                 'enabled' => true,
                 'points'  => 150,

@@ -1,11 +1,11 @@
 <?php
 /**
  * Plugin Name: Loyalty & Rewards for WooCommerce
- * Plugin URI:  http://beenacle.com/
+ * Plugin URI:  https://beenacle.com/
  * Description: Reusable loyalty and rewards system for WooCommerce with configurable earning, tiers, referrals, and redemption.
  * Version:     1.0.0
  * Author:      Beenacle Technologies
- * Author URI:  http://beenacle.com/
+ * Author URI:  https://beenacle.com/
  * Text Domain: wc-loyalty-rewards
  * Domain Path: /languages
  * Requires at least: 6.0
@@ -70,6 +70,9 @@ function wclr_activate(): void {
     require_once WCLR_PLUGIN_DIR . 'includes/Installer.php';
     $installer = new WCLR\Installer();
     $installer->activate();
+    // Ensure custom endpoints (e.g., My Account tab) are registered immediately.
+    add_rewrite_endpoint( 'wclr-loyalty', EP_ROOT | EP_PAGES );
+    flush_rewrite_rules();
 }
 register_activation_hook( __FILE__, 'wclr_activate' );
 

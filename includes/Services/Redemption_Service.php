@@ -29,6 +29,7 @@ class Redemption_Service {
         add_action( 'woocommerce_thankyou', [ $this, 'finalize_redemption_on_order' ], 20, 1 );
         add_filter( 'woocommerce_update_order_review_fragments', [ $this, 'filter_checkout_fragments' ] );
         add_filter( 'woocommerce_add_to_cart_fragments', [ $this, 'filter_cart_fragments' ] );
+        add_shortcode( 'wclr_redeem_widget', [ $this, 'shortcode_redeem_widget' ] );
     }
 
     /**
@@ -182,7 +183,7 @@ class Redemption_Service {
     /**
      * Render redemption block shared.
      */
-    private function render_redeem_block(): string {
+    public function render_redeem_block(): string {
         if ( is_admin() ) {
             return '';
         }
@@ -338,6 +339,13 @@ class Redemption_Service {
             $fragments['.wclr-redeem-block-wrapper'] = $html;
         }
         return $fragments;
+    }
+
+    /**
+     * Shortcode handler for standalone redeem widget.
+     */
+    public function shortcode_redeem_widget(): string {
+        return $this->render_redeem_block();
     }
 }
 

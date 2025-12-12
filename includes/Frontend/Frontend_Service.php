@@ -33,6 +33,10 @@ class Frontend_Service {
         add_action( 'wp_enqueue_scripts', [ $this, 'enqueue_assets' ] );
         add_action( 'wp', [ $this, 'maybe_queue_reward_notice' ] );
         add_action( 'wp_footer', [ $this, 'render_reward_notice_and_confetti' ] );
+        add_shortcode( 'wclr_points_balance', [ $this, 'shortcode_points_balance' ] );
+        add_shortcode( 'wclr_tier_info', [ $this, 'shortcode_tier_info' ] );
+        add_shortcode( 'wclr_referral_block', [ $this, 'shortcode_referral_block' ] );
+        add_shortcode( 'wclr_recent_ledger', [ $this, 'shortcode_recent_ledger' ] );
 
         if ( $this->is_funnelkit_cart_active() ) {
             add_action( 'fkcart_after_order_summary', [ $this, 'render_funnelkit_cart_points' ] );
@@ -267,6 +271,123 @@ class Frontend_Service {
             </div>
         </div>
         <?php
+    }
+
+    /**
+     * Shortcode: points balance and lifetime.
+     */
+    public function shortcode_points_balance(): string {
+        $user_id = get_current_user_id();
+        if ( ! $user_id ) {
+            return esc_html__( 'Please log in to view your points.', 'wc-loyalty-rewards' );
+        }
+        $balance = $this->points->get_user_balance( $user_id );
+        ob_start();
+        ?>
+        <div class="wclr-shortcode wclr-points-balance">
+            <p><?php echo esc_html( sprintf( __( 'Balance: %d points', 'wc-loyalty-rewards' ), $balance->balance ) ); ?></p>
+            <p><?php echo esc_html( sprintf( __( 'Lifetime: %d points', 'wc-loyalty-rewards' ), $balance->lifetime_points ) ); ?></p>
+        </div>
+        <?php
+        return ob_get_clean();
+    }
+
+    /**
+     * Shortcode: tier info.
+     */
+    public function shortcode_tier_info(): string {
+        $user_id = get_current_user_id();
+        if ( ! $user_id ) {
+            return esc_html__( 'Please log in to view your tier.', 'wc-loyalty-rewards' );
+        }
+        $tier = $this->tiers->get_user_tier( $user_id );
+        if ( ! $tier ) {
+            return esc_html__( 'You are not in a tier yet.', 'wc-loyalty-rewards' );
+        }
+        ob_start();
+        ?>
+        <div class="wclr-shortcode wclr-tier-info">
+            <p><?php echo esc_html( sprintf( __( 'Tier: %s', 'wc-loyalty-rewards' ), $tier->name ) ); ?></p>
+            <p><?php echo esc_html( sprintf( __( 'Multiplier: x%s', 'wc-loyalty-rewards' ), $tier->multiplier ) ); ?></p>
+        </div>
+        <?php
+        return ob_get_clean();
+    }
+
+    /**
+     * Shortcode: referral code and link block.
+     */
+    public function shortcode_referral_block(): string {
+        $user_id = get_current_user_id();
+        if ( ! $user_id ) {
+            return esc_html__( 'Please log in to view your referral link.', 'wc-loyalty-rewards' );
+        }
+        $code = $this->referrals->get_referral_code( $user_id );
+        $link = $code ? add_query_arg( 'ref', $code, home_url() ) : '';
+        ob_start();
+        ?>
+        <div class="wclr-shortcode wclr-referral-block">
+            <p><strong><?php esc_html_e( 'Your referral code', 'wc-loyalty-rewards' ); ?>:</strong> <code><?php echo esc_html( $code ); ?></code></p>
+            <?php if ( $link ) : ?>
+                <p><a href="<?php echo esc_url( $link ); ?>"><?php echo esc_html( $link ); ?></a></p>
+            <?php endif; ?>
+        </div>
+        <?php
+        return ob_get_clean();
+    }
+
+    /**
+     * Shortcode: recent ledger entries.
+     *
+     * @param array<string,string> $atts Shortcode attributes.
+     */
+    public function shortcode_recent_ledger( array $atts ): string {
+        $user_id = get_current_user_id();
+        if ( ! $user_id ) {
+            return esc_html__( 'Please log in to view your points activity.', 'wc-loyalty-rewards' );
+        }
+        $atts  = shortcode_atts(
+            [
+                'limit' => 10,
+            ],
+            $atts,
+            'wclr_recent_ledger'
+        );
+        $limit  = max( 1, min( 50, (int) $atts['limit'] ) );
+        $recent = $this->points->get_recent_ledger_entries( $user_id, $limit );
+
+        if ( empty( $recent ) ) {
+            return esc_html__( 'No recent activity.', 'wc-loyalty-rewards' );
+        }
+
+        ob_start();
+        ?>
+        <div class="wclr-shortcode wclr-recent-ledger">
+            <table class="widefat striped" style="max-width: 100%; margin-top: 10px;">
+                <thead>
+                    <tr>
+                        <th><?php esc_html_e( 'Date', 'wc-loyalty-rewards' ); ?></th>
+                        <th><?php esc_html_e( 'Type', 'wc-loyalty-rewards' ); ?></th>
+                        <th><?php esc_html_e( 'Amount', 'wc-loyalty-rewards' ); ?></th>
+                        <th><?php esc_html_e( 'Balance After', 'wc-loyalty-rewards' ); ?></th>
+                        <th><?php esc_html_e( 'Context', 'wc-loyalty-rewards' ); ?></th>
+                    </tr>
+                </thead>
+                <tbody>
+                <?php foreach ( $recent as $entry ) : ?>
+                    <tr>
+                        <td><?php echo esc_html( date_i18n( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), strtotime( $entry->created_at ) ) ); ?></td>
+                        <td><?php echo esc_html( ucfirst( $entry->type ) ); ?></td>
+                        <td><?php echo esc_html( $entry->amount ); ?></td>
+                        <td><?php echo esc_html( $entry->balance_after ); ?></td>
+                        <td><?php echo esc_html( $entry->context ); ?></td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+        <?php
+        return ob_get_clean();
     }
 }
 

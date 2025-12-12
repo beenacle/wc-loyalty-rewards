@@ -97,7 +97,10 @@ class Points_Service {
             return 0;
         }
 
-        $points = (int) floor( $subtotal * $rate * $multiplier );
+        // Flash multiplier (time-bound, optional product scope).
+        $flash_multiplier = $this->get_flash_multiplier_for_order( $order );
+
+        $points = (int) floor( $subtotal * $rate * $multiplier * $flash_multiplier );
         $points = apply_filters( 'wc_loyalty_rewards_earn_rate', $points, $order );
 
         if ( $points > 0 ) {
@@ -171,6 +174,8 @@ class Points_Service {
             return 0;
         }
 
+        $flash_multiplier = $this->get_flash_multiplier_for_cart( $cart );
+
         // Skip earning if any applied coupon is in the exclusion list (only if exclusion is enabled).
         if ( ! empty( $settings['order_earning']['exclude_coupons_enabled'] ) ) {
             $excluded_coupons = isset( $settings['order_earning']['exclude_coupons'] ) && is_array( $settings['order_earning']['exclude_coupons'] ) ? $settings['order_earning']['exclude_coupons'] : [];
@@ -193,16 +198,16 @@ class Points_Service {
             $multiplier *= $this->tier_service->get_multiplier_for_user( $user_id );
         }
 
-        $points = (int) floor( $subtotal * $rate * $multiplier );
+        $points = (int) floor( $subtotal * $rate * $multiplier * $flash_multiplier );
         $points = max( 0, $points );
 
         return (int) apply_filters( 'wc_loyalty_rewards_cart_points_preview', $points, $cart, $user_id );
     }
 
     /**
-     * Login activity earning.
+     * Daily visit activity earning.
      */
-    public function earn_for_login_activity( int $user_id ): int {
+    public function earn_for_daily_visit( int $user_id ): int {
         $settings = Settings_Cache::get();
         $rule     = $settings['login'] ?? [];
         if ( empty( $rule['enabled'] ) ) {
@@ -216,34 +221,106 @@ class Points_Service {
             return 0;
         }
 
-        $week_key = gmdate( 'o-W' ); // Year-week.
-        $logins   = get_user_meta( $user_id, '_wclr_weekly_logins', true );
-        if ( ! is_array( $logins ) ) {
-            $logins = [];
-        }
-        $logins[ $week_key ] = isset( $logins[ $week_key ] ) ? (int) $logins[ $week_key ] + 1 : 1;
-        update_user_meta( $user_id, '_wclr_weekly_logins', $logins );
+        $today = gmdate( 'Y-m-d' );
 
-        $rewarded = get_user_meta( $user_id, '_wclr_weekly_rewarded', true );
-        if ( ! is_array( $rewarded ) ) {
-            $rewarded = [];
+        // Check if we've already rewarded for today (prevents multiple rewards on same day after reset).
+        $last_reward_date = get_user_meta( $user_id, '_wclr_last_visit_reward_date', true );
+        if ( $last_reward_date === $today ) {
+            return 0;
         }
 
-        if ( $logins[ $week_key ] >= $threshold && empty( $rewarded[ $week_key ] ) ) {
+        // Get visited days for this user.
+        $visited_days = get_user_meta( $user_id, '_wclr_daily_visits', true );
+        if ( ! is_array( $visited_days ) ) {
+            $visited_days = [];
+        }
+
+        // Track today's visit (only once per day).
+        if ( ! isset( $visited_days[ $today ] ) ) {
+            $visited_days[ $today ] = 1;
+
+            // Clean up old dates (keep only last 30 days for efficiency).
+            $thirty_days_ago = gmdate( 'Y-m-d', strtotime( '-30 days' ) );
+            foreach ( $visited_days as $date => $value ) {
+                if ( $date < $thirty_days_ago ) {
+                    unset( $visited_days[ $date ] );
+                }
+            }
+
+            update_user_meta( $user_id, '_wclr_daily_visits', $visited_days );
+        }
+
+        // Count unique days visited.
+        $days_visited = count( $visited_days );
+
+        // Check if threshold is reached.
+        if ( $days_visited >= $threshold ) {
             $this->add_points(
                 $user_id,
                 $points,
                 'earn',
                 [
-                    'context' => 'login_reward',
+                    'context' => 'daily_visit_reward',
                 ]
             );
-            $rewarded[ $week_key ] = 1;
-            update_user_meta( $user_id, '_wclr_weekly_rewarded', $rewarded );
+
+            // Mark today as rewarded and reset visited days after reward to allow earning again.
+            update_user_meta( $user_id, '_wclr_last_visit_reward_date', $today );
+            $visited_days = [];
+            update_user_meta( $user_id, '_wclr_daily_visits', $visited_days );
+
             return $points;
         }
 
         return 0;
+    }
+
+    /**
+     * Birthday bonus.
+     */
+    public function earn_for_birthday( int $user_id, string $birthday_value, string $meta_key, ?string $preferred_format = null ): int {
+        $settings = Settings_Cache::get();
+        $rule     = $settings['birthday'] ?? [];
+        if ( empty( $rule['enabled'] ) ) {
+            return 0;
+        }
+
+        $points = isset( $rule['points'] ) ? (int) $rule['points'] : 0;
+        if ( $points <= 0 ) {
+            return 0;
+        }
+
+        $date_parts = $this->parse_birthday_month_day( $birthday_value, $preferred_format );
+        if ( null === $date_parts ) {
+            return 0;
+        }
+
+        $today_month = gmdate( 'm' );
+        $today_day   = gmdate( 'd' );
+        if ( $date_parts['month'] !== $today_month || $date_parts['day'] !== $today_day ) {
+            return 0;
+        }
+
+        $year = (int) gmdate( 'Y' );
+        $key  = '_wclr_birthday_year';
+        $last = (int) get_user_meta( $user_id, $key, true );
+        if ( $last === $year ) {
+            return 0;
+        }
+
+        $this->add_points(
+            $user_id,
+            $points,
+            'earn',
+            [
+                'context'        => 'birthday',
+                'meta_key'       => $meta_key,
+                'birthday_value' => $birthday_value,
+            ]
+        );
+        update_user_meta( $user_id, $key, $year );
+
+        return $points;
     }
 
     /**
@@ -274,6 +351,60 @@ class Points_Service {
         );
         update_user_meta( $user_id, $key, $year );
         return $points;
+    }
+
+    /**
+     * Parse a birthday string into month/day components.
+     *
+     * Supports common formats: Y-m-d, Y/m/d, Y.m.d, m-d, m/d, m.d, d-m, d/m, d.m.
+     *
+     * @return array{month:string,day:string}|null
+     */
+    private function parse_birthday_month_day( string $value, ?string $preferred_format = null ): ?array {
+        $value = trim( $value );
+        if ( '' === $value ) {
+            return null;
+        }
+
+        $formats = [
+            'Y-m-d',
+            'Y/m/d',
+            'Y.m.d',
+            'm-d',
+            'm/d',
+            'm.d',
+            'd-m',
+            'd/m',
+            'd.m',
+        ];
+
+        if ( $preferred_format ) {
+            $formats = array_values( array_unique( array_merge( [ $preferred_format ], $formats ) ) );
+        }
+
+        foreach ( $formats as $format ) {
+            $dt = \DateTime::createFromFormat( $format, $value, new \DateTimeZone( 'UTC' ) );
+            if ( $dt instanceof \DateTime ) {
+                $month = (int) $dt->format( 'm' );
+                $day   = (int) $dt->format( 'd' );
+                if ( $month >= 1 && $month <= 12 && $day >= 1 && $day <= 31 ) {
+                    return [
+                        'month' => str_pad( (string) $month, 2, '0', STR_PAD_LEFT ),
+                        'day'   => str_pad( (string) $day, 2, '0', STR_PAD_LEFT ),
+                    ];
+                }
+            }
+        }
+
+        $timestamp = strtotime( $value );
+        if ( false === $timestamp ) {
+            return null;
+        }
+
+        return [
+            'month' => gmdate( 'm', $timestamp ),
+            'day'   => gmdate( 'd', $timestamp ),
+        ];
     }
 
     /**
@@ -365,6 +496,14 @@ class Points_Service {
         if ( $type === 'earn' && $amount > 0 ) {
             $new_lifetime += $amount;
         }
+        if ( $type === 'adjustment' && $amount > 0 ) {
+            $new_lifetime += $amount; // Count positive admin adjustments toward lifetime.
+        }
+
+        $old_tier = null;
+        if ( null !== $this->tier_service ) {
+            $old_tier = $this->tier_service->get_user_tier( $user_id );
+        }
 
         do_action( 'wc_loyalty_rewards_before_earn_points', $user_id, $amount, $data );
 
@@ -413,6 +552,15 @@ class Points_Service {
         }
 
         do_action( 'wc_loyalty_rewards_after_earn_points', $user_id, $amount, $data );
+
+        // Detect tier changes (after meta write).
+        if ( null === $this->tier_service ) {
+            $this->tier_service = new Tier_Service();
+        }
+        $new_tier = $this->tier_service->get_user_tier( $user_id );
+        if ( ( $old_tier && ( ! $new_tier || $old_tier->id !== $new_tier->id ) ) || ( ! $old_tier && $new_tier ) ) {
+            do_action( 'wc_loyalty_rewards_user_tier_changed', $user_id, $old_tier, $new_tier );
+        }
 
         $ledger_id = $wpdb->insert_id > 0 ? (int) $wpdb->insert_id : 0;
 
@@ -485,18 +633,134 @@ class Points_Service {
         global $wpdb;
         $table   = $wpdb->prefix . 'wclr_points_ledger';
         $results = $wpdb->get_results( "SELECT user_id, SUM(amount) AS total FROM {$table} WHERE type = 'earn' AND amount > 0 GROUP BY user_id", ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-        if ( empty( $results ) ) {
-            return 0;
+
+        // Map of user_id => lifetime from ledger.
+        $ledger_totals = [];
+        foreach ( (array) $results as $row ) {
+            $ledger_totals[ (int) $row['user_id'] ] = (int) $row['total'];
         }
+
+        // Users who currently have lifetime meta set (so we can zero those with no earns).
+        $meta_users = $wpdb->get_col( $wpdb->prepare( "SELECT user_id FROM {$wpdb->usermeta} WHERE meta_key = %s", '_wclr_lifetime_points' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+        $meta_users = array_map( 'intval', (array) $meta_users );
+
         $updated = 0;
-        foreach ( $results as $row ) {
-            $user_id  = (int) $row['user_id'];
-            $lifetime = (int) $row['total'];
+        $tier_service = $this->tier_service ?? new Tier_Service();
+
+        // Update all users with ledger totals.
+        foreach ( $ledger_totals as $user_id => $lifetime ) {
+            $old_tier = $tier_service->get_user_tier( $user_id );
             update_user_meta( $user_id, '_wclr_lifetime_points', $lifetime );
             wp_cache_delete( $user_id, 'user_meta' );
+            $new_tier = $tier_service->get_user_tier( $user_id );
+            if ( ( $old_tier && ( ! $new_tier || $old_tier->id !== $new_tier->id ) ) || ( ! $old_tier && $new_tier ) ) {
+                /**
+                 * Fires when a user's tier changes after lifetime recalculation.
+                 *
+                 * @param int       $user_id  User ID.
+                 * @param Tier|null $old_tier Previous tier.
+                 * @param Tier|null $new_tier New tier.
+                 */
+                do_action( 'wc_loyalty_rewards_user_tier_changed', $user_id, $old_tier, $new_tier );
+            }
             $updated++;
         }
+
+        // For users that had lifetime meta but no earns, set to zero for consistency.
+        foreach ( $meta_users as $user_id ) {
+            if ( isset( $ledger_totals[ $user_id ] ) ) {
+                continue;
+            }
+            $old_tier = $tier_service->get_user_tier( $user_id );
+            update_user_meta( $user_id, '_wclr_lifetime_points', 0 );
+            wp_cache_delete( $user_id, 'user_meta' );
+            $new_tier = $tier_service->get_user_tier( $user_id );
+            if ( ( $old_tier && ( ! $new_tier || $old_tier->id !== $new_tier->id ) ) || ( ! $old_tier && $new_tier ) ) {
+                do_action( 'wc_loyalty_rewards_user_tier_changed', $user_id, $old_tier, $new_tier );
+            }
+            $updated++;
+        }
+
         return $updated;
+    }
+
+    /**
+     * Determine flash multiplier for an order (time-bound, optional product scoping).
+     */
+    private function get_flash_multiplier_for_order( WC_Order $order ): float {
+        $settings = Settings_Cache::get();
+        $flash    = $settings['flash_earning'] ?? [];
+        if ( empty( $flash['enabled'] ) ) {
+            return 1.0;
+        }
+        $product_ids = [];
+        foreach ( $order->get_items() as $item ) {
+            $product_id = $item->get_product_id();
+            if ( $product_id ) {
+                $product_ids[] = (int) $product_id;
+            }
+        }
+        return $this->compute_flash_multiplier( $flash, $product_ids );
+    }
+
+    /**
+     * Determine flash multiplier for cart estimation.
+     */
+    private function get_flash_multiplier_for_cart( WC_Cart $cart ): float {
+        $settings = Settings_Cache::get();
+        $flash    = $settings['flash_earning'] ?? [];
+        if ( empty( $flash['enabled'] ) ) {
+            return 1.0;
+        }
+        $product_ids = [];
+        foreach ( $cart->get_cart() as $item ) {
+            if ( ! empty( $item['product_id'] ) ) {
+                $product_ids[] = (int) $item['product_id'];
+            }
+        }
+        return $this->compute_flash_multiplier( $flash, $product_ids );
+    }
+
+    /**
+     * Core flash multiplier logic shared by cart and order.
+     *
+     * @param array<int> $product_ids Product IDs involved.
+     */
+    private function compute_flash_multiplier( array $flash, array $product_ids ): float {
+        $multiplier = isset( $flash['multiplier'] ) ? (float) $flash['multiplier'] : 1.0;
+        if ( $multiplier <= 1 ) {
+            return 1.0;
+        }
+        $now = current_time( 'timestamp' );
+
+        $start_ok = true;
+        if ( ! empty( $flash['start'] ) ) {
+            $start_ts = strtotime( $flash['start'] );
+            if ( $start_ts && $now < $start_ts ) {
+                return 1.0;
+            }
+        }
+
+        $end_ok = true;
+        if ( ! empty( $flash['end'] ) ) {
+            $end_ts = strtotime( $flash['end'] );
+            if ( $end_ts && $now > $end_ts ) {
+                return 1.0;
+            }
+        }
+
+        $scoped_products = isset( $flash['product_ids'] ) ? (array) $flash['product_ids'] : [];
+        $scoped_products = array_filter( array_map( 'intval', $scoped_products ) );
+
+        if ( ! empty( $scoped_products ) ) {
+            // Only apply if any product in cart/order is in scope.
+            $intersection = array_intersect( $scoped_products, $product_ids );
+            if ( empty( $intersection ) ) {
+                return 1.0;
+            }
+        }
+
+        return $multiplier;
     }
 }
 

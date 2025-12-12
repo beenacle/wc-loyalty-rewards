@@ -28,6 +28,7 @@ class Admin_Service {
         if ( is_admin() ) {
             add_action( 'admin_menu', [ $this, 'register_menu' ] );
             add_action( 'admin_init', [ $this, 'register_settings' ] );
+            add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_admin_assets' ] );
             add_action( 'show_user_profile', [ $this, 'render_user_profile' ] );
             add_action( 'edit_user_profile', [ $this, 'render_user_profile' ] );
             add_action( 'personal_options_update', [ $this, 'handle_user_adjustment' ] );
@@ -84,6 +85,15 @@ class Admin_Service {
             'wclr-tiers',
             [ $this, 'render_tiers_page' ]
         );
+
+        add_submenu_page(
+            'wclr',
+            __( 'Utilities', 'wc-loyalty-rewards' ),
+            __( 'Utilities', 'wc-loyalty-rewards' ),
+            'manage_woocommerce',
+            'wclr-utilities',
+            [ $this, 'render_utilities_page' ]
+        );
     }
 
     /**
@@ -91,6 +101,22 @@ class Admin_Service {
      */
     public function register_settings(): void {
         register_setting( 'wclr_settings', 'wclr_settings', [ $this, 'sanitize_settings' ] );
+    }
+
+    /**
+     * Enqueue admin assets for our pages.
+     */
+    public function enqueue_admin_assets( string $hook ): void {
+        // Load only on our plugin pages.
+        if ( false === strpos( $hook, 'wclr' ) ) {
+            return;
+        }
+
+        // WooCommerce enhanced select (Select2).
+        if ( function_exists( 'WC' ) ) {
+            wp_enqueue_script( 'wc-enhanced-select' );
+            wp_enqueue_style( 'woocommerce_admin_styles' );
+        }
     }
 
     /**
@@ -109,6 +135,13 @@ class Admin_Service {
                 'min_order'        => 0,
                 'refund_behavior'  => 'reverse',
             ],
+            'flash_earning'       => [
+                'enabled'     => false,
+                'multiplier'  => 2.0,
+                'start'       => '',
+                'end'         => '',
+                'product_ids' => [],
+            ],
             'signup_bonus'        => [
                 'enabled' => true,
                 'points'  => 100,
@@ -122,6 +155,12 @@ class Admin_Service {
                 'enabled'   => true,
                 'threshold' => 3,
                 'points'    => 50,
+            ],
+            'birthday'           => [
+                'enabled'  => false,
+                'points'   => 150,
+                'meta_key' => 'birthday',
+                'format'   => 'Y-m-d',
             ],
             'anniversary'         => [
                 'enabled' => true,
@@ -175,6 +214,24 @@ class Admin_Service {
             'exclude_coupons'        => array_map( 'sanitize_text_field', $exclude_coupons_oe ),
         ];
 
+        $flash                     = $input['flash_earning'];
+        $products_raw              = isset( $flash['product_ids'] ) ? (array) $flash['product_ids'] : [];
+        $product_ids_sanitized     = array_filter(
+            array_map(
+                static function ( $id ) {
+                    return (int) $id;
+                },
+                $products_raw
+            )
+        );
+        $input['flash_earning']    = [
+            'enabled'    => ! empty( $flash['enabled'] ),
+            'multiplier' => isset( $flash['multiplier'] ) ? max( 1, (float) $flash['multiplier'] ) : 1,
+            'start'      => isset( $flash['start'] ) ? sanitize_text_field( $flash['start'] ) : '',
+            'end'        => isset( $flash['end'] ) ? sanitize_text_field( $flash['end'] ) : '',
+            'product_ids'=> $product_ids_sanitized,
+        ];
+
         $signup                    = $input['signup_bonus'];
         $input['signup_bonus']     = [
             'enabled' => ! empty( $signup['enabled'] ),
@@ -193,6 +250,18 @@ class Admin_Service {
             'enabled'   => ! empty( $login['enabled'] ),
             'threshold' => isset( $login['threshold'] ) ? max( 0, (int) $login['threshold'] ) : 0,
             'points'    => isset( $login['points'] ) ? max( 0, (int) $login['points'] ) : 0,
+        ];
+
+        $birthday                  = $input['birthday'];
+        $meta_key                  = isset( $birthday['meta_key'] ) ? sanitize_key( $birthday['meta_key'] ) : '';
+        $allowed_formats           = [ 'Y-m-d', 'Y/m/d', 'Y.m.d', 'm/d/Y', 'd/m/Y', 'm-d', 'd-m' ];
+        $format_raw                = isset( $birthday['format'] ) ? sanitize_text_field( $birthday['format'] ) : '';
+        $format_clean              = in_array( $format_raw, $allowed_formats, true ) ? $format_raw : 'Y-m-d';
+        $input['birthday']         = [
+            'enabled'  => ! empty( $birthday['enabled'] ),
+            'points'   => isset( $birthday['points'] ) ? max( 0, (int) $birthday['points'] ) : 0,
+            'meta_key' => ! empty( $meta_key ) ? $meta_key : 'birthday',
+            'format'   => $format_clean,
         ];
 
         $anniversary               = $input['anniversary'];
@@ -240,12 +309,6 @@ class Admin_Service {
         ?>
         <div class="wrap">
             <h1><?php esc_html_e( 'Loyalty & Rewards Settings', 'wc-loyalty-rewards' ); ?></h1>
-            <style>
-                .wclr-panel { display: none; }
-                .wclr-panel.is-active { display: block; }
-                .wclr-panel .postbox { margin-top: 16px; }
-                .wclr-panel .postbox:first-of-type { margin-top: 8px; }
-            </style>
             <form method="post" action="options.php">
                 <?php settings_fields( 'wclr_settings' ); ?>
                 <h2 class="nav-tab-wrapper">
@@ -266,7 +329,9 @@ class Admin_Service {
                     <?php endforeach; ?>
                 </h2>
 
-                <div id="wclr-panel-general" class="wclr-panel is-active">
+                <div id="poststuff">
+
+                <div id="wclr-panel-general" class="wclr-panel">
                     <h2><?php esc_html_e( 'General', 'wc-loyalty-rewards' ); ?></h2>
                     <table class="form-table" role="presentation">
                         <tr>
@@ -288,10 +353,10 @@ class Admin_Service {
                     </table>
                 </div>
 
-                <div id="wclr-panel-earning" class="wclr-panel">
+                <div id="wclr-panel-earning" class="wclr-panel hidden">
                     <h2><?php esc_html_e( 'Earning', 'wc-loyalty-rewards' ); ?></h2>
                     <div class="postbox">
-                        <div class="postbox-header"><h3><?php esc_html_e( 'Orders', 'wc-loyalty-rewards' ); ?></h3></div>
+                        <div class="postbox-header"><h2 class="hndle"><span><?php esc_html_e( 'Orders', 'wc-loyalty-rewards' ); ?></span></h2></div>
                         <div class="inside">
                             <table class="form-table" role="presentation">
                                 <tr>
@@ -326,20 +391,24 @@ class Admin_Service {
                                         <?php
                                         $exclude_coupons_enabled_oe = ! empty( $settings['order_earning']['exclude_coupons_enabled'] );
                                         $excluded_coupons_oe = isset( $settings['order_earning']['exclude_coupons'] ) && is_array( $settings['order_earning']['exclude_coupons'] ) ? $settings['order_earning']['exclude_coupons'] : [];
-                                        $all_coupons = $this->get_all_coupons();
                                         ?>
                                         <label>
                                             <input type="checkbox" name="wclr_settings[order_earning][exclude_coupons_enabled]" value="1" <?php checked( $exclude_coupons_enabled_oe ); ?> class="wclr-exclude-coupons-toggle" data-target="wclr-exclude-coupons-oe" />
                                             <?php esc_html_e( 'Exclude specific coupons from earning points', 'wc-loyalty-rewards' ); ?>
                                         </label>
                                         <div id="wclr-exclude-coupons-oe" style="margin-top: 10px; <?php echo $exclude_coupons_enabled_oe ? '' : 'display: none;'; ?>">
-                                            <input type="text" class="wclr-coupon-search" placeholder="<?php esc_attr_e( 'Search coupons...', 'wc-loyalty-rewards' ); ?>" style="width: 100%; margin-bottom: 5px; padding: 5px;" />
-                                            <select name="wclr_settings[order_earning][exclude_coupons][]" multiple="multiple" class="wclr-coupon-select" style="width: 100%; min-height: 150px;">
-                                                <?php foreach ( $all_coupons as $code => $name ) : ?>
+                                            <select
+                                                name="wclr_settings[order_earning][exclude_coupons][]"
+                                                class="wc-enhanced-select"
+                                                multiple="multiple"
+                                                style="width: 100%;"
+                                                data-placeholder="<?php esc_attr_e( 'Search and select coupons…', 'wc-loyalty-rewards' ); ?>"
+                                            >
+                                                <?php foreach ( $this->get_all_coupons() as $code => $name ) : ?>
                                                     <option value="<?php echo esc_attr( $code ); ?>" <?php selected( in_array( $code, $excluded_coupons_oe, true ) ); ?>><?php echo esc_html( $name ); ?></option>
                                                 <?php endforeach; ?>
                                             </select>
-                                            <p class="description"><?php esc_html_e( 'Select coupons that should prevent points from being earned. Hold Ctrl/Cmd to select multiple.', 'wc-loyalty-rewards' ); ?></p>
+                                            <p class="description"><?php esc_html_e( 'Select coupons that should prevent points from being earned.', 'wc-loyalty-rewards' ); ?></p>
                                         </div>
                                     </td>
                                 </tr>
@@ -348,7 +417,53 @@ class Admin_Service {
                     </div>
 
                     <div class="postbox">
-                        <div class="postbox-header"><h3><?php esc_html_e( 'Signup', 'wc-loyalty-rewards' ); ?></h3></div>
+                        <div class="postbox-header"><h2 class="hndle"><span><?php esc_html_e( 'Flash Points Days', 'wc-loyalty-rewards' ); ?></span></h2></div>
+                        <div class="inside">
+                            <table class="form-table" role="presentation">
+                                <tr>
+                                    <th scope="row"><?php esc_html_e( 'Enable flash multiplier', 'wc-loyalty-rewards' ); ?></th>
+                                    <td><label><input type="checkbox" name="wclr_settings[flash_earning][enabled]" value="1" <?php checked( ! empty( $settings['flash_earning']['enabled'] ) ); ?> /> <?php esc_html_e( 'Apply a time-limited multiplier to earning', 'wc-loyalty-rewards' ); ?></label></td>
+                                </tr>
+                                <tr>
+                                    <th scope="row"><?php esc_html_e( 'Multiplier (e.g., 2 = 2x)', 'wc-loyalty-rewards' ); ?></th>
+                                    <td><input type="number" step="0.1" min="1" name="wclr_settings[flash_earning][multiplier]" value="<?php echo esc_attr( $settings['flash_earning']['multiplier'] ); ?>" /></td>
+                                </tr>
+                                <tr>
+                                    <th scope="row"><?php esc_html_e( 'Start (date/time)', 'wc-loyalty-rewards' ); ?></th>
+                                    <td><input type="datetime-local" class="wclr-datetime" name="wclr_settings[flash_earning][start]" value="<?php echo esc_attr( $settings['flash_earning']['start'] ); ?>" placeholder="2025-05-01T00:00" /></td>
+                                </tr>
+                                <tr>
+                                    <th scope="row"><?php esc_html_e( 'End (date/time)', 'wc-loyalty-rewards' ); ?></th>
+                                    <td><input type="datetime-local" class="wclr-datetime" name="wclr_settings[flash_earning][end]" value="<?php echo esc_attr( $settings['flash_earning']['end'] ); ?>" placeholder="2025-05-03T23:59" /></td>
+                                </tr>
+                                <tr>
+                                    <th scope="row"><?php esc_html_e( 'Limit to products (optional)', 'wc-loyalty-rewards' ); ?></th>
+                                    <td>
+                                        <?php
+                                        $selected_products = $this->get_products_by_ids( (array) $settings['flash_earning']['product_ids'] );
+                                        ?>
+                                        <select
+                                            class="wc-product-search"
+                                            name="wclr_settings[flash_earning][product_ids][]"
+                                            multiple="multiple"
+                                            style="width: 100%;"
+                                            data-placeholder="<?php esc_attr_e( 'Search for products&hellip;', 'wc-loyalty-rewards' ); ?>"
+                                            data-allow_clear="true"
+                                            data-action="woocommerce_json_search_products_and_variations"
+                                        >
+                                            <?php foreach ( $selected_products as $pid => $pname ) : ?>
+                                                <option value="<?php echo esc_attr( $pid ); ?>" selected="selected"><?php echo esc_html( $pname ); ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                        <p class="description"><?php esc_html_e( 'Leave blank for all products. Search and select to scope the flash multiplier.', 'wc-loyalty-rewards' ); ?></p>
+                                    </td>
+                                </tr>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="postbox">
+                        <div class="postbox-header"><h2 class="hndle"><span><?php esc_html_e( 'Signup', 'wc-loyalty-rewards' ); ?></span></h2></div>
                         <div class="inside">
                             <table class="form-table" role="presentation">
                                 <tr>
@@ -364,7 +479,7 @@ class Admin_Service {
                     </div>
 
                     <div class="postbox">
-                        <div class="postbox-header"><h3><?php esc_html_e( 'Referral', 'wc-loyalty-rewards' ); ?></h3></div>
+                        <div class="postbox-header"><h2 class="hndle"><span><?php esc_html_e( 'Referral', 'wc-loyalty-rewards' ); ?></span></h2></div>
                         <div class="inside">
                             <table class="form-table" role="presentation">
                                 <tr>
@@ -384,16 +499,16 @@ class Admin_Service {
                     </div>
 
                     <div class="postbox">
-                        <div class="postbox-header"><h3><?php esc_html_e( 'Login Activity', 'wc-loyalty-rewards' ); ?></h3></div>
+                        <div class="postbox-header"><h2 class="hndle"><span><?php esc_html_e( 'Daily Visit Activity', 'wc-loyalty-rewards' ); ?></span></h2></div>
                         <div class="inside">
                             <table class="form-table" role="presentation">
                                 <tr>
                                     <th scope="row"><?php esc_html_e( 'Enable', 'wc-loyalty-rewards' ); ?></th>
-                                    <td><label><input type="checkbox" name="wclr_settings[login][enabled]" value="1" <?php checked( ! empty( $settings['login']['enabled'] ) ); ?> /> <?php esc_html_e( 'Award points after X logins per week', 'wc-loyalty-rewards' ); ?></label></td>
+                                    <td><label><input type="checkbox" name="wclr_settings[login][enabled]" value="1" <?php checked( ! empty( $settings['login']['enabled'] ) ); ?> /> <?php esc_html_e( 'Award points after X daily visits', 'wc-loyalty-rewards' ); ?></label></td>
                                 </tr>
                                 <tr>
-                                    <th scope="row"><?php esc_html_e( 'Required logins (per week)', 'wc-loyalty-rewards' ); ?></th>
-                                    <td><input type="number" name="wclr_settings[login][threshold]" value="<?php echo esc_attr( $settings['login']['threshold'] ); ?>" /></td>
+                                    <th scope="row"><?php esc_html_e( 'Required daily visits', 'wc-loyalty-rewards' ); ?></th>
+                                    <td><input type="number" name="wclr_settings[login][threshold]" value="<?php echo esc_attr( $settings['login']['threshold'] ); ?>" /> <span class="description"><?php esc_html_e( 'Number of unique days a user must visit to earn points', 'wc-loyalty-rewards' ); ?></span></td>
                                 </tr>
                                 <tr>
                                     <th scope="row"><?php esc_html_e( 'Points when reached', 'wc-loyalty-rewards' ); ?></th>
@@ -404,7 +519,52 @@ class Admin_Service {
                     </div>
 
                     <div class="postbox">
-                        <div class="postbox-header"><h3><?php esc_html_e( 'Anniversary', 'wc-loyalty-rewards' ); ?></h3></div>
+                        <div class="postbox-header"><h2 class="hndle"><span><?php esc_html_e( 'Birthday', 'wc-loyalty-rewards' ); ?></span></h2></div>
+                        <div class="inside">
+                            <table class="form-table" role="presentation">
+                                <tr>
+                                    <th scope="row"><?php esc_html_e( 'Enable', 'wc-loyalty-rewards' ); ?></th>
+                                    <td><label><input type="checkbox" name="wclr_settings[birthday][enabled]" value="1" <?php checked( ! empty( $settings['birthday']['enabled'] ) ); ?> /> <?php esc_html_e( 'Award points on customer birthdays', 'wc-loyalty-rewards' ); ?></label></td>
+                                </tr>
+                                <tr>
+                                    <th scope="row"><?php esc_html_e( 'Points', 'wc-loyalty-rewards' ); ?></th>
+                                    <td><input type="number" name="wclr_settings[birthday][points]" value="<?php echo esc_attr( $settings['birthday']['points'] ); ?>" /></td>
+                                </tr>
+                                <tr>
+                                    <th scope="row"><?php esc_html_e( 'User meta field', 'wc-loyalty-rewards' ); ?></th>
+                                    <td>
+                                        <input type="text" name="wclr_settings[birthday][meta_key]" value="<?php echo esc_attr( $settings['birthday']['meta_key'] ); ?>" />
+                                        <p class="description"><?php esc_html_e( 'Meta key that stores the customer birthday (recommended format: YYYY-MM-DD).', 'wc-loyalty-rewards' ); ?></p>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <th scope="row"><?php esc_html_e( 'Birthday format', 'wc-loyalty-rewards' ); ?></th>
+                                    <td>
+                                        <select name="wclr_settings[birthday][format]">
+                                            <?php
+                                            $birthday_formats = [
+                                                'Y-m-d' => 'YYYY-MM-DD (2025-04-30)',
+                                                'Y/m/d' => 'YYYY/MM/DD (2025/04/30)',
+                                                'Y.m.d' => 'YYYY.MM.DD (2025.04.30)',
+                                                'm/d/Y' => 'MM/DD/YYYY (04/30/2025)',
+                                                'd/m/Y' => 'DD/MM/YYYY (30/04/2025)',
+                                                'm-d'   => 'MM-DD (04-30)',
+                                                'd-m'   => 'DD-MM (30-04)',
+                                            ];
+                                            foreach ( $birthday_formats as $format_value => $label ) :
+                                                ?>
+                                                <option value="<?php echo esc_attr( $format_value ); ?>" <?php selected( $settings['birthday']['format'], $format_value ); ?>><?php echo esc_html( $label ); ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                        <p class="description"><?php esc_html_e( 'Select the date format stored in the meta field. For yearless formats (MM-DD or DD-MM), the current year is assumed.', 'wc-loyalty-rewards' ); ?></p>
+                                    </td>
+                                </tr>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="postbox">
+                        <div class="postbox-header"><h2 class="hndle"><span><?php esc_html_e( 'Anniversary', 'wc-loyalty-rewards' ); ?></span></h2></div>
                         <div class="inside">
                             <table class="form-table" role="presentation">
                                 <tr>
@@ -420,7 +580,7 @@ class Admin_Service {
                     </div>
                 </div>
 
-                <div id="wclr-panel-redemption" class="wclr-panel">
+                <div id="wclr-panel-redemption" class="wclr-panel hidden">
                     <h2><?php esc_html_e( 'Redemption', 'wc-loyalty-rewards' ); ?></h2>
                     <table class="form-table" role="presentation">
                         <tr>
@@ -465,30 +625,34 @@ class Admin_Service {
                         <tr>
                             <th scope="row"><?php esc_html_e( 'Exclude coupons', 'wc-loyalty-rewards' ); ?></th>
                             <td>
-                                <?php
-                                $exclude_coupons_enabled_red = ! empty( $settings['redemption']['exclude_coupons_enabled'] );
-                                $excluded_coupons_red = isset( $settings['redemption']['exclude_coupons'] ) && is_array( $settings['redemption']['exclude_coupons'] ) ? $settings['redemption']['exclude_coupons'] : [];
-                                $all_coupons = $this->get_all_coupons();
-                                ?>
-                                <label>
-                                    <input type="checkbox" name="wclr_settings[redemption][exclude_coupons_enabled]" value="1" <?php checked( $exclude_coupons_enabled_red ); ?> class="wclr-exclude-coupons-toggle" data-target="wclr-exclude-coupons-red" />
-                                    <?php esc_html_e( 'Exclude specific coupons from point redemption', 'wc-loyalty-rewards' ); ?>
-                                </label>
-                                <div id="wclr-exclude-coupons-red" style="margin-top: 10px; <?php echo $exclude_coupons_enabled_red ? '' : 'display: none;'; ?>">
-                                    <input type="text" class="wclr-coupon-search" placeholder="<?php esc_attr_e( 'Search coupons...', 'wc-loyalty-rewards' ); ?>" style="width: 100%; margin-bottom: 5px; padding: 5px;" />
-                                    <select name="wclr_settings[redemption][exclude_coupons][]" multiple="multiple" class="wclr-coupon-select" style="width: 100%; min-height: 150px;">
-                                        <?php foreach ( $all_coupons as $code => $name ) : ?>
-                                            <option value="<?php echo esc_attr( $code ); ?>" <?php selected( in_array( $code, $excluded_coupons_red, true ) ); ?>><?php echo esc_html( $name ); ?></option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                    <p class="description"><?php esc_html_e( 'Select coupons that should prevent point redemption. Hold Ctrl/Cmd to select multiple.', 'wc-loyalty-rewards' ); ?></p>
-                                </div>
+                                    <?php
+                                    $exclude_coupons_enabled_red = ! empty( $settings['redemption']['exclude_coupons_enabled'] );
+                                    $excluded_coupons_red = isset( $settings['redemption']['exclude_coupons'] ) && is_array( $settings['redemption']['exclude_coupons'] ) ? $settings['redemption']['exclude_coupons'] : [];
+                                    ?>
+                                    <label>
+                                        <input type="checkbox" name="wclr_settings[redemption][exclude_coupons_enabled]" value="1" <?php checked( $exclude_coupons_enabled_red ); ?> class="wclr-exclude-coupons-toggle" data-target="wclr-exclude-coupons-red" />
+                                        <?php esc_html_e( 'Exclude specific coupons from point redemption', 'wc-loyalty-rewards' ); ?>
+                                    </label>
+                                    <div id="wclr-exclude-coupons-red" style="margin-top: 10px; <?php echo $exclude_coupons_enabled_red ? '' : 'display: none;'; ?>">
+                                        <select
+                                            name="wclr_settings[redemption][exclude_coupons][]"
+                                            class="wc-enhanced-select"
+                                            multiple="multiple"
+                                            style="width: 100%;"
+                                            data-placeholder="<?php esc_attr_e( 'Search and select coupons…', 'wc-loyalty-rewards' ); ?>"
+                                        >
+                                            <?php foreach ( $this->get_all_coupons() as $code => $name ) : ?>
+                                                <option value="<?php echo esc_attr( $code ); ?>" <?php selected( in_array( $code, $excluded_coupons_red, true ) ); ?>><?php echo esc_html( $name ); ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                        <p class="description"><?php esc_html_e( 'Select coupons that should prevent point redemption.', 'wc-loyalty-rewards' ); ?></p>
+                                    </div>
                             </td>
                         </tr>
                     </table>
                 </div>
 
-                <div id="wclr-panel-display" class="wclr-panel">
+                <div id="wclr-panel-display" class="wclr-panel hidden">
                     <h2><?php esc_html_e( 'Display', 'wc-loyalty-rewards' ); ?></h2>
                     <table class="form-table" role="presentation">
                         <tr>
@@ -506,9 +670,9 @@ class Admin_Service {
                     </table>
                 </div>
 
-                <div id="wclr-panel-utilities" class="wclr-panel">
+                <div id="wclr-panel-utilities" class="wclr-panel hidden">
                     <h2><?php esc_html_e( 'Shortcodes', 'wc-loyalty-rewards' ); ?></h2>
-                    <table class="widefat striped" style="max-width: 900px;">
+                    <table class="widefat striped">
                         <thead>
                             <tr>
                                 <th><?php esc_html_e( 'Shortcode', 'wc-loyalty-rewards' ); ?></th>
@@ -541,6 +705,8 @@ class Admin_Service {
                     <p class="description"><?php esc_html_e( 'Place these in pages or templates. Shortcodes output user-specific data when logged in.', 'wc-loyalty-rewards' ); ?></p>
                 </div>
 
+                </div><!-- /poststuff -->
+
                 <?php submit_button(); ?>
             </form>
             <script>
@@ -562,9 +728,9 @@ class Admin_Service {
                         });
                         panels.forEach(function(panel) {
                             if (panel.id === 'wclr-panel-' + id) {
-                                panel.classList.add('is-active');
+                                panel.classList.remove('hidden');
                             } else {
-                                panel.classList.remove('is-active');
+                                panel.classList.add('hidden');
                             }
                         });
                         if (!skipHash && window.history && window.location) {
@@ -623,7 +789,47 @@ class Admin_Service {
         }
         global $wpdb;
         $table   = $wpdb->prefix . 'wclr_points_ledger';
-        $entries = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} ORDER BY created_at DESC LIMIT %d", 100 ), ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        $user_filter = isset( $_GET['wclr_user'] ) ? sanitize_text_field( wp_unslash( $_GET['wclr_user'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+        $type_filter = isset( $_GET['wclr_type'] ) ? sanitize_text_field( wp_unslash( $_GET['wclr_type'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+        $clauses     = [];
+        $params      = [];
+
+        if ( '' !== $user_filter ) {
+            $maybe_user_id = (int) $user_filter;
+            if ( $maybe_user_id > 0 ) {
+                $clauses[] = 'user_id = %d';
+                $params[]  = $maybe_user_id;
+            } else {
+                $user_obj = get_user_by( 'email', $user_filter );
+                if ( ! $user_obj ) {
+                    $user_obj = get_user_by( 'login', $user_filter );
+                }
+                if ( $user_obj ) {
+                    $clauses[] = 'user_id = %d';
+                    $params[]  = $user_obj->ID;
+                }
+            }
+        }
+
+        $allowed_types = [ 'earn', 'spend', 'adjustment' ];
+        if ( in_array( $type_filter, $allowed_types, true ) ) {
+            $clauses[] = 'type = %s';
+            $params[]  = $type_filter;
+        }
+
+        $where = '1=1';
+        if ( ! empty( $clauses ) ) {
+            $where = implode( ' AND ', $clauses );
+        }
+
+        $allowed_limits = [ 50, 100, 200, 500 ];
+        $limit          = isset( $_GET['wclr_limit'] ) ? (int) $_GET['wclr_limit'] : 200; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+        if ( ! in_array( $limit, $allowed_limits, true ) ) {
+            $limit = 200;
+        }
+        $params[] = $limit;
+        $sql = $wpdb->prepare( "SELECT * FROM {$table} WHERE {$where} ORDER BY created_at DESC LIMIT %d", $params ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+        $entries = $wpdb->get_results( $sql, ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
         ?>
         <div class="wrap">
             <h1><?php esc_html_e( 'Points Ledger', 'wc-loyalty-rewards' ); ?></h1>
@@ -642,32 +848,42 @@ class Admin_Service {
                 </div>
             <?php endif; ?>
 
-            <h2><?php esc_html_e( 'Import / Export Points', 'wc-loyalty-rewards' ); ?></h2>
-            <div style="display:flex; gap:20px; align-items:flex-start; flex-wrap:wrap;">
-                <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
-                    <?php wp_nonce_field( 'wclr_export_points' ); ?>
-                    <input type="hidden" name="action" value="wclr_export_points" />
-                    <p><button type="submit" class="button button-secondary"><?php esc_html_e( 'Export Points CSV', 'wc-loyalty-rewards' ); ?></button></p>
-                    <p class="description"><?php esc_html_e( 'Exports user_id, email, balance, lifetime.', 'wc-loyalty-rewards' ); ?></p>
-                </form>
+            <div id="poststuff">
+                <div class="postbox" style="margin-top: 15px;">
+                    <div class="postbox-header"><h2 class="hndle"><span><?php esc_html_e( 'Filter Ledger', 'wc-loyalty-rewards' ); ?></span></h2></div>
+                    <div class="inside">
+                        <form method="get">
+                            <input type="hidden" name="page" value="wclr-ledger" />
+                            <div class="tablenav top">
+                                <div class="alignleft actions">
+                                    <label class="screen-reader-text" for="wclr_user"><?php esc_html_e( 'User filter', 'wc-loyalty-rewards' ); ?></label>
+                                    <input type="text" class="regular-text" name="wclr_user" id="wclr_user" value="<?php echo esc_attr( $user_filter ); ?>" placeholder="<?php esc_attr_e( 'User ID, email, or login', 'wc-loyalty-rewards' ); ?>" />
 
-                <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" enctype="multipart/form-data">
-                    <?php wp_nonce_field( 'wclr_import_points' ); ?>
-                    <input type="hidden" name="action" value="wclr_import_points" />
-                    <p>
-                        <label for="wclr_points_file"><strong><?php esc_html_e( 'Import CSV', 'wc-loyalty-rewards' ); ?></strong></label><br/>
-                        <input type="file" name="wclr_points_file" id="wclr_points_file" accept=".csv" required />
-                    </p>
-                    <p><button type="submit" class="button button-primary"><?php esc_html_e( 'Import Points', 'wc-loyalty-rewards' ); ?></button></p>
-                    <p class="description"><?php esc_html_e( 'CSV columns: user_id, user_email, points_balance, lifetime_points', 'wc-loyalty-rewards' ); ?></p>
-                </form>
+                                    <label class="screen-reader-text" for="wclr_type"><?php esc_html_e( 'Type filter', 'wc-loyalty-rewards' ); ?></label>
+                                    <select name="wclr_type" id="wclr_type">
+                                        <option value=""><?php esc_html_e( 'All types', 'wc-loyalty-rewards' ); ?></option>
+                                        <option value="earn" <?php selected( $type_filter, 'earn' ); ?>><?php esc_html_e( 'Earn', 'wc-loyalty-rewards' ); ?></option>
+                                        <option value="spend" <?php selected( $type_filter, 'spend' ); ?>><?php esc_html_e( 'Spend', 'wc-loyalty-rewards' ); ?></option>
+                                        <option value="adjustment" <?php selected( $type_filter, 'adjustment' ); ?>><?php esc_html_e( 'Adjustment', 'wc-loyalty-rewards' ); ?></option>
+                                    </select>
 
-                <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
-                    <?php wp_nonce_field( 'wclr_recalc_lifetime' ); ?>
-                    <input type="hidden" name="action" value="wclr_recalc_lifetime" />
-                    <p><button type="submit" class="button"><?php esc_html_e( 'Recalculate Lifetime Points', 'wc-loyalty-rewards' ); ?></button></p>
-                    <p class="description"><?php esc_html_e( 'Rebuilds lifetime points from earn ledger entries for all users.', 'wc-loyalty-rewards' ); ?></p>
-                </form>
+                                    <label class="screen-reader-text" for="wclr_limit"><?php esc_html_e( 'Entries per page', 'wc-loyalty-rewards' ); ?></label>
+                                    <select name="wclr_limit" id="wclr_limit">
+                                        <?php foreach ( [ 50, 100, 200, 500 ] as $lim ) : ?>
+                                            <option value="<?php echo esc_attr( $lim ); ?>" <?php selected( $limit, $lim ); ?>><?php echo esc_html( sprintf( __( '%d entries', 'wc-loyalty-rewards' ), $lim ) ); ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+
+                                    <button class="button button-primary" type="submit"><?php esc_html_e( 'Apply Filters', 'wc-loyalty-rewards' ); ?></button>
+                                    <?php if ( $user_filter || $type_filter ) : ?>
+                                        <a class="button button-secondary" href="<?php echo esc_url( admin_url( 'admin.php?page=wclr-ledger' ) ); ?>"><?php esc_html_e( 'Reset', 'wc-loyalty-rewards' ); ?></a>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                            <p class="description"><?php esc_html_e( 'Filter by user (ID, email, or login) and entry type.', 'wc-loyalty-rewards' ); ?></p>
+                        </form>
+                    </div>
+                </div>
             </div>
 
             <table class="widefat striped">
@@ -696,6 +912,63 @@ class Admin_Service {
                 <?php endforeach; ?>
                 </tbody>
             </table>
+        </div>
+        <?php
+    }
+
+    /**
+     * Render utilities (import/export/lifetime) page.
+     */
+    public function render_utilities_page(): void {
+        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+            wp_die( esc_html__( 'You do not have permission.', 'wc-loyalty-rewards' ) );
+        }
+        ?>
+        <div class="wrap">
+            <h1><?php esc_html_e( 'Loyalty & Rewards Utilities', 'wc-loyalty-rewards' ); ?></h1>
+            <p class="description"><?php esc_html_e( 'Import/export points and recalculate lifetime points.', 'wc-loyalty-rewards' ); ?></p>
+
+            <div class="metabox-holder">
+                <div class="postbox">
+                    <div class="postbox-header"><h2 class="hndle"><span><?php esc_html_e( 'Export Points', 'wc-loyalty-rewards' ); ?></span></h2></div>
+                    <div class="inside">
+                        <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                            <?php wp_nonce_field( 'wclr_export_points' ); ?>
+                            <input type="hidden" name="action" value="wclr_export_points" />
+                            <p><button type="submit" class="button button-secondary"><?php esc_html_e( 'Export Points CSV', 'wc-loyalty-rewards' ); ?></button></p>
+                            <p class="description"><?php esc_html_e( 'Exports user_id, email, points_balance, lifetime_points.', 'wc-loyalty-rewards' ); ?></p>
+                        </form>
+                    </div>
+                </div>
+
+                <div class="postbox">
+                    <div class="postbox-header"><h2 class="hndle"><span><?php esc_html_e( 'Import Points', 'wc-loyalty-rewards' ); ?></span></h2></div>
+                    <div class="inside">
+                        <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" enctype="multipart/form-data">
+                            <?php wp_nonce_field( 'wclr_import_points' ); ?>
+                            <input type="hidden" name="action" value="wclr_import_points" />
+                            <p>
+                                <label for="wclr_points_file"><strong><?php esc_html_e( 'Import CSV', 'wc-loyalty-rewards' ); ?></strong></label><br/>
+                                <input type="file" name="wclr_points_file" id="wclr_points_file" accept=".csv" required />
+                            </p>
+                            <p><button type="submit" class="button button-primary"><?php esc_html_e( 'Import Points', 'wc-loyalty-rewards' ); ?></button></p>
+                            <p class="description"><?php esc_html_e( 'CSV columns: user_id, user_email, points_balance, lifetime_points', 'wc-loyalty-rewards' ); ?></p>
+                        </form>
+                    </div>
+                </div>
+
+                <div class="postbox">
+                    <div class="postbox-header"><h2 class="hndle"><span><?php esc_html_e( 'Recalculate Lifetime Points', 'wc-loyalty-rewards' ); ?></span></h2></div>
+                    <div class="inside">
+                        <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                            <?php wp_nonce_field( 'wclr_recalc_lifetime' ); ?>
+                            <input type="hidden" name="action" value="wclr_recalc_lifetime" />
+                            <p><button type="submit" class="button"><?php esc_html_e( 'Recalculate Lifetime Points', 'wc-loyalty-rewards' ); ?></button></p>
+                            <p class="description"><?php esc_html_e( 'Rebuilds lifetime points from earn ledger entries for all users.', 'wc-loyalty-rewards' ); ?></p>
+                        </form>
+                    </div>
+                </div>
+            </div>
         </div>
         <?php
     }
@@ -878,6 +1151,27 @@ class Admin_Service {
                 }
             }
         }
+    }
+
+    /**
+     * Get product names for selected IDs (pre-populate select2).
+     *
+     * @param array<int> $ids Product IDs.
+     * @return array<int,string>
+     */
+    private function get_products_by_ids( array $ids ): array {
+        if ( empty( $ids ) ) {
+            return [];
+        }
+        $names = [];
+        foreach ( $ids as $id ) {
+            $id      = (int) $id;
+            $product = $id > 0 ? wc_get_product( $id ) : null;
+            if ( $product ) {
+                $names[ $id ] = $product->get_formatted_name();
+            }
+        }
+        return $names;
     }
 
     /**
@@ -1174,14 +1468,14 @@ class Admin_Service {
     /**
      * Render points column content.
      *
-     * @param string $value       Column value.
+     * @param string|null $value  Column value provided by hook.
      * @param string $column_name Column name.
      * @param int    $user_id     User ID.
      * @return string
      */
-    public function render_points_column( string $value, string $column_name, int $user_id ): string {
+    public function render_points_column( ?string $value, string $column_name, int $user_id ): string {
         if ( 'wclr_points' !== $column_name ) {
-            return $value;
+            return $value ?? '';
         }
 
         $balance = $this->points->get_user_balance( $user_id );
@@ -1218,12 +1512,10 @@ class Admin_Service {
         }
 
         $order = isset( $_GET['order'] ) && 'asc' === strtolower( $_GET['order'] ) ? 'ASC' : 'DESC'; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-
-        global $wpdb;
-        $meta_key = '_wclr_points_balance';
-
-        $query->query_from .= " LEFT JOIN {$wpdb->usermeta} AS wclr_balance ON {$wpdb->users}.ID = wclr_balance.user_id AND wclr_balance.meta_key = '{$meta_key}'";
-        $query->query_orderby = " ORDER BY CAST(wclr_balance.meta_value AS UNSIGNED) {$order}";
+        // Use meta sort to avoid manual SQL mangling.
+        $query->set( 'meta_key', '_wclr_points_balance' );
+        $query->set( 'orderby', 'meta_value_num' );
+        $query->set( 'order', $order );
     }
 }
 

@@ -28,9 +28,13 @@ $meta_keys = [
     '_wclr_lifetime_points',
     '_wclr_referral_code',
     '_wclr_signup_awarded',
-    '_wclr_weekly_logins',
-    '_wclr_weekly_rewarded',
+    '_wclr_daily_visits',
+    '_wclr_last_visit_reward_date',
+    '_wclr_last_visit_reward_count', // Legacy - keep for cleanup of old data.
+    '_wclr_weekly_logins', // Legacy - keep for cleanup of old data.
+    '_wclr_weekly_rewarded', // Legacy - keep for cleanup of old data.
     '_wclr_anniversary_year',
+    '_wclr_birthday_year',
     '_wclr_pending_reward_notice',
 ];
 

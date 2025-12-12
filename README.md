@@ -14,7 +14,7 @@ Reusable loyalty and rewards plugin for WooCommerce. Fully OOP, namespaced, PHP 
 4) Configure under **Loyalty & Rewards** (top-level menu).
 
 ## Key Features
-- Configurable earning triggers: orders, signup, referral (first order), login activity, anniversary.
+- Configurable earning triggers: orders, signup, referral (first order), daily visit activity, birthday (user meta + format), anniversary.
 - Dynamic tiers (DB-backed) with multipliers, CRUD and reordering.
 - Redemption with manual/auto modes, coupon exclusions, refund handling.
 - Referral codes and first-order rewards; My Account shows code/link and recent referrals.
@@ -31,7 +31,7 @@ Reusable loyalty and rewards plugin for WooCommerce. Fully OOP, namespaced, PHP 
 
 ## Settings Overview (Loyalty & Rewards → Settings)
 - General: enable program, uninstall data, base rate, base multiplier.
-- Earning: orders (tax/shipping/min/refund behavior/coupon exclusions), signup, referral bonuses, login (X logins/week), anniversary.
+- Earning: orders (tax/shipping/min/refund behavior/coupon exclusions), signup, referral bonuses, daily visits (X unique days visited), birthday (points + meta key + date format), anniversary.
 - Redemption: enable, rate, max %, auto modes (max/percent), refund return, manual input toggle, coupon exclusions.
 - Display: My Account tab, cart, checkout widgets.
 - Shortcodes: listed in Utilities tab.
@@ -50,7 +50,7 @@ Reusable loyalty and rewards plugin for WooCommerce. Fully OOP, namespaced, PHP 
 
 ## Hooks (examples)
 - Actions: `wc_loyalty_rewards_before_earn_points`, `wc_loyalty_rewards_after_earn_points`, `wc_loyalty_rewards_before_redeem_points`, `wc_loyalty_rewards_after_redeem_points`, `wc_loyalty_rewards_user_tier_changed`, `wc_loyalty_rewards_after_admin_adjustment`.
-- Filters: `wc_loyalty_rewards_earn_rate`, `wc_loyalty_rewards_referral_bonus`, `wc_loyalty_rewards_signup_bonus`, `wc_loyalty_rewards_anniversary_bonus`, `wc_loyalty_rewards_login_rule`, `wc_loyalty_rewards_redemption_config`, `wc_loyalty_rewards_cart_points_preview`.
+- Filters: `wc_loyalty_rewards_earn_rate`, `wc_loyalty_rewards_referral_bonus`, `wc_loyalty_rewards_signup_bonus`, `wc_loyalty_rewards_anniversary_bonus`, `wc_loyalty_rewards_daily_visit_rule`, `wc_loyalty_rewards_redemption_config`, `wc_loyalty_rewards_cart_points_preview`.
 
 ## Import / Export
 - Export: CSV with `user_id,user_email,points_balance,lifetime_points`.

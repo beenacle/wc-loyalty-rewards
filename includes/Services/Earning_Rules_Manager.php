@@ -25,7 +25,7 @@ class Earning_Rules_Manager {
     public function register(): void {
         add_action( 'woocommerce_order_status_completed', [ $this, 'handle_order_completed' ], 20, 1 );
         add_action( 'user_register', [ $this, 'handle_signup_bonus' ] );
-        add_action( 'wp_login', [ $this, 'handle_login_activity' ], 10, 2 );
+        add_action( 'wp', [ $this, 'handle_daily_visit' ] );
         add_action( 'init', [ $this, 'capture_ref_param' ] );
         add_action( 'user_register', [ $this->referrals, 'maybe_log_referral_on_signup' ] );
     }
@@ -56,10 +56,18 @@ class Earning_Rules_Manager {
     }
 
     /**
-     * Login handler.
+     * Daily visit handler - tracks visits for logged-in users.
      */
-    public function handle_login_activity( string $user_login, \WP_User $user ): void { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter
-        $this->points->earn_for_login_activity( $user->ID );
+    public function handle_daily_visit(): void {
+        // Only track frontend visits, not admin or AJAX requests.
+        if ( is_admin() || wp_doing_ajax() || ! is_user_logged_in() ) {
+            return;
+        }
+
+        $user_id = get_current_user_id();
+        if ( $user_id ) {
+            $this->points->earn_for_daily_visit( $user_id );
+        }
     }
 
     /**
