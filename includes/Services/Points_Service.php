@@ -500,18 +500,29 @@ class Points_Service {
      * Uses transient-based locking to prevent race conditions.
      */
     public function add_points( int $user_id, int $amount, string $type, array $data ): Points_Ledger {
-        // Use transient lock to prevent concurrent updates (race condition protection).
+        // Use atomic cache-based locking to prevent concurrent updates (race condition protection).
+        // wp_cache_add() is atomic - it only sets the value if it doesn't exist, preventing race conditions.
         $lock_key = 'wclr_points_lock_' . $user_id;
         $lock_timeout = 5; // 5 seconds max wait
+        $lock_acquired = false;
 
-        // Try to acquire lock (max 5 attempts with 100ms delay to avoid blocking).
+        // Try to acquire lock atomically (max 5 attempts with 100ms delay to avoid blocking).
         $attempts = 0;
-        while ( false !== get_transient( $lock_key ) && $attempts < $lock_timeout ) {
-            usleep( 100000 ); // 100ms delay (non-blocking for short waits).
-            $attempts++;
+        while ( ! $lock_acquired && $attempts < $lock_timeout ) {
+            // wp_cache_add() is atomic: returns true if lock was acquired, false if already exists.
+            $lock_acquired = wp_cache_add( $lock_key, time(), '', 10 );
+            if ( ! $lock_acquired ) {
+                usleep( 100000 ); // 100ms delay (non-blocking for short waits).
+                $attempts++;
+            }
         }
 
-        // Set lock for this operation (10 second expiry as safety).
+        // If we couldn't acquire the lock after timeout, throw an exception.
+        if ( ! $lock_acquired ) {
+            throw new \RuntimeException( 'WCLR: Unable to acquire lock for points update after timeout. User ID: ' . $user_id );
+        }
+
+        // Also set transient as backup for cross-request persistence (if object cache is not persistent).
         set_transient( $lock_key, time(), 10 );
 
         try {
@@ -612,8 +623,11 @@ class Points_Service {
                 ]
             );
         } finally {
-            // Always release lock.
-            delete_transient( $lock_key );
+            // Always release lock (both cache and transient).
+            if ( $lock_acquired ) {
+                wp_cache_delete( $lock_key, '' );
+                delete_transient( $lock_key );
+            }
         }
     }
 
