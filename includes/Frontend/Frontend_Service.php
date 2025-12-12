@@ -65,7 +65,7 @@ class Frontend_Service {
      * Add menu item.
      */
     public function add_account_menu_item( array $items ): array {
-        $settings = get_option( 'wclr_settings', [] );
+        $settings = Settings_Cache::get();
         if ( ! empty( $settings['display']['show_my_account'] ) ) {
             $items['wclr-loyalty'] = __( 'Loyalty & Rewards', 'wc-loyalty-rewards' );
         }
@@ -267,7 +267,7 @@ class Frontend_Service {
                 <?php if ( empty( $recent ) ) : ?>
                     <p><?php esc_html_e( 'No recent activity.', 'wc-loyalty-rewards' ); ?></p>
                 <?php else : ?>
-                    <table class="widefat striped" style="max-width: 100%; margin-top: 10px;">
+                    <table class="widefat striped wclr-ledger-table">
                         <thead>
                             <tr>
                                 <th><?php esc_html_e( 'Date', 'wc-loyalty-rewards' ); ?></th>
@@ -291,7 +291,7 @@ class Frontend_Service {
                     </table>
 
                     <?php if ( $total_pages > 1 ) : ?>
-                        <div class="wclr-pagination" style="margin-top: 15px; text-align: center;">
+                        <div class="wclr-pagination">
                             <?php
                             $base_url = wc_get_endpoint_url( 'wclr-loyalty', '', wc_get_page_permalink( 'myaccount' ) );
 
@@ -299,7 +299,7 @@ class Frontend_Service {
                             if ( $current_page > 1 ) :
                                 $prev_url = add_query_arg( 'wclr_page', $current_page - 1, $base_url );
                                 ?>
-                                <a href="<?php echo esc_url( $prev_url ); ?>" class="button" style="margin-right: 5px;"><?php esc_html_e( '← Previous', 'wc-loyalty-rewards' ); ?></a>
+                                <a href="<?php echo esc_url( $prev_url ); ?>" class="button"><?php esc_html_e( '← Previous', 'wc-loyalty-rewards' ); ?></a>
                             <?php endif; ?>
 
                             <?php
@@ -310,27 +310,27 @@ class Frontend_Service {
                             if ( $start_page > 1 ) :
                                 $first_url = add_query_arg( 'wclr_page', 1, $base_url );
                                 ?>
-                                <a href="<?php echo esc_url( $first_url ); ?>" class="button" style="margin-right: 5px;">1</a>
+                                <a href="<?php echo esc_url( $first_url ); ?>" class="button">1</a>
                                 <?php if ( $start_page > 2 ) : ?>
-                                    <span style="margin-right: 5px;">...</span>
+                                    <span>...</span>
                                 <?php endif; ?>
                             <?php endif; ?>
 
                             <?php for ( $i = $start_page; $i <= $end_page; $i++ ) : ?>
                                 <?php if ( $i === $current_page ) : ?>
-                                    <span class="button" style="margin-right: 5px; background: #2271b1; color: #fff; cursor: default;"><?php echo esc_html( $i ); ?></span>
+                                    <span class="button active"><?php echo esc_html( $i ); ?></span>
                                 <?php else : ?>
                                     <?php $page_url = add_query_arg( 'wclr_page', $i, $base_url ); ?>
-                                    <a href="<?php echo esc_url( $page_url ); ?>" class="button" style="margin-right: 5px;"><?php echo esc_html( $i ); ?></a>
+                                    <a href="<?php echo esc_url( $page_url ); ?>" class="button"><?php echo esc_html( $i ); ?></a>
                                 <?php endif; ?>
                             <?php endfor; ?>
 
                             <?php if ( $end_page < $total_pages ) : ?>
                                 <?php if ( $end_page < $total_pages - 1 ) : ?>
-                                    <span style="margin-right: 5px;">...</span>
+                                    <span>...</span>
                                 <?php endif; ?>
                                 <?php $last_url = add_query_arg( 'wclr_page', $total_pages, $base_url ); ?>
-                                <a href="<?php echo esc_url( $last_url ); ?>" class="button" style="margin-right: 5px;"><?php echo esc_html( $total_pages ); ?></a>
+                                <a href="<?php echo esc_url( $last_url ); ?>" class="button"><?php echo esc_html( $total_pages ); ?></a>
                             <?php endif; ?>
 
                             <?php
@@ -338,10 +338,10 @@ class Frontend_Service {
                             if ( $current_page < $total_pages ) :
                                 $next_url = add_query_arg( 'wclr_page', $current_page + 1, $base_url );
                                 ?>
-                                <a href="<?php echo esc_url( $next_url ); ?>" class="button" style="margin-left: 5px;"><?php esc_html_e( 'Next →', 'wc-loyalty-rewards' ); ?></a>
+                                <a href="<?php echo esc_url( $next_url ); ?>" class="button"><?php esc_html_e( 'Next →', 'wc-loyalty-rewards' ); ?></a>
                             <?php endif; ?>
 
-                            <p style="margin-top: 10px; font-size: 0.9em; color: #666;">
+                            <p class="wclr-pagination-info">
                                 <?php
                                 echo esc_html(
                                     sprintf(
@@ -452,7 +452,7 @@ class Frontend_Service {
         ob_start();
         ?>
         <div class="wclr-shortcode wclr-recent-ledger">
-            <table class="widefat striped" style="max-width: 100%; margin-top: 10px;">
+            <table class="widefat striped wclr-ledger-table">
                 <thead>
                     <tr>
                         <th><?php esc_html_e( 'Date', 'wc-loyalty-rewards' ); ?></th>

@@ -1,0 +1,123 @@
+/**
+ * Admin Styles for WC Loyalty Rewards
+ */
+
+/* Settings Page */
+.wclr-panel {
+    margin-top: 20px;
+}
+
+.wclr-panel.hidden {
+    display: none;
+}
+
+.wclr-panel h2 {
+    margin-top: 0;
+    padding-top: 0;
+}
+
+/* Tab Navigation */
+.wclr-tab-button {
+    cursor: pointer;
+}
+
+/* Form Elements */
+.wclr-form-group {
+    margin-bottom: 15px;
+}
+
+.wclr-form-group label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: 600;
+}
+
+.wclr-form-group input[type="text"],
+.wclr-form-group input[type="number"],
+.wclr-form-group select {
+    width: 100%;
+    max-width: 400px;
+}
+
+/* Postbox Consistency */
+.wclr-postbox {
+    margin-top: 15px;
+}
+
+.wclr-postbox:first-child {
+    margin-top: 0;
+}
+
+/* Ledger Page */
+.wclr-ledger-filters {
+    margin-bottom: 20px;
+}
+
+.wclr-ledger-filters .tablenav {
+    margin-bottom: 10px;
+}
+
+.wclr-ledger-filters .alignleft.actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+}
+
+.wclr-ledger-filters input[type="text"],
+.wclr-ledger-filters select {
+    margin-right: 10px;
+}
+
+.wclr-ledger-filters .button {
+    margin-left: 0;
+}
+
+/* Tiers Page */
+.wclr-tiers-table input[type="text"],
+.wclr-tiers-table input[type="number"] {
+    width: 100%;
+    max-width: 150px;
+}
+
+.wclr-tiers-table td {
+    vertical-align: middle;
+}
+
+/* Utilities Page */
+.wclr-utilities-postbox {
+    margin-bottom: 20px;
+}
+
+.wclr-utilities-postbox:last-child {
+    margin-bottom: 0;
+}
+
+/* User Profile Section */
+.wclr-user-profile-table {
+    margin-top: 10px;
+}
+
+/* Responsive Design */
+@media (max-width: 782px) {
+    .wclr-ledger-filters .alignleft.actions {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .wclr-ledger-filters input[type="text"],
+    .wclr-ledger-filters select {
+        width: 100%;
+        margin-right: 0;
+        margin-bottom: 10px;
+    }
+
+    .wclr-tiers-table {
+        font-size: 0.9em;
+    }
+
+    .wclr-tiers-table input[type="text"],
+    .wclr-tiers-table input[type="number"] {
+        max-width: 100%;
+    }
+}

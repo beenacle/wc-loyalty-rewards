@@ -28,7 +28,12 @@ class Points_Ledger {
         $this->context       = (string) ( $data['context'] ?? '' );
         $this->order_id      = isset( $data['order_id'] ) ? (int) $data['order_id'] : null;
         $this->admin_id      = isset( $data['admin_id'] ) ? (int) $data['admin_id'] : null;
-        $this->meta          = isset( $data['meta'] ) ? (array) json_decode( (string) $data['meta'], true ) : [];
+        if ( isset( $data['meta'] ) && ! empty( $data['meta'] ) ) {
+            $decoded = json_decode( (string) $data['meta'], true );
+            $this->meta = is_array( $decoded ) ? $decoded : [];
+        } else {
+            $this->meta = [];
+        }
         $this->created_at    = (string) ( $data['created_at'] ?? '' );
     }
 }

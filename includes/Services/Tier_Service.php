@@ -65,19 +65,27 @@ class Tier_Service {
 
     /**
      * Determine the tier for a user based on lifetime points.
+     * Returns the highest qualifying tier (highest min_lifetime_points that user qualifies for).
      */
     public function get_user_tier( int $user_id ): ?Tier {
         $lifetime = (int) get_user_meta( $user_id, '_wclr_lifetime_points', true );
         $tiers    = $this->get_tiers();
         $current  = null;
+        $highest_min = -1;
+
         foreach ( $tiers as $tier ) {
+            // Check if user qualifies for this tier
             if ( $lifetime < $tier->min_lifetime_points ) {
                 continue;
             }
             if ( null !== $tier->max_lifetime_points && $lifetime > $tier->max_lifetime_points ) {
                 continue;
             }
-            $current = $tier;
+            // Select tier with highest min_lifetime_points (best tier user qualifies for)
+            if ( $tier->min_lifetime_points > $highest_min ) {
+                $highest_min = $tier->min_lifetime_points;
+                $current = $tier;
+            }
         }
         return $current;
     }

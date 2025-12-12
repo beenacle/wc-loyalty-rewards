@@ -70,8 +70,8 @@ class Points_Service {
 
         // Skip earning if any applied coupon is in the exclusion list (only if exclusion is enabled).
         if ( ! empty( $settings['order_earning']['exclude_coupons_enabled'] ) ) {
-            $excluded_coupons = isset( $settings['order_earning']['exclude_coupons'] ) && is_array( $settings['order_earning']['exclude_coupons'] ) ? $settings['order_earning']['exclude_coupons'] : [];
-            if ( ! empty( $excluded_coupons ) ) {
+            $excluded_coupons = $settings['order_earning']['exclude_coupons'] ?? [];
+            if ( ! empty( $excluded_coupons ) && is_array( $excluded_coupons ) ) {
                 $applied_coupons = $order->get_coupon_codes();
                 foreach ( $applied_coupons as $applied_code ) {
                     if ( in_array( $applied_code, $excluded_coupons, true ) ) {
@@ -83,7 +83,7 @@ class Points_Service {
 
         $include_tax      = ! empty( $settings['order_earning']['include_tax'] );
         $include_shipping = ! empty( $settings['order_earning']['include_shipping'] );
-        $min_order        = isset( $settings['order_earning']['min_order'] ) ? (float) $settings['order_earning']['min_order'] : 0;
+        $min_order        = (float) ( $settings['order_earning']['min_order'] ?? 0 );
 
         $subtotal = (float) $order->get_subtotal();
         if ( $include_tax ) {
@@ -128,7 +128,7 @@ class Points_Service {
         if ( empty( $settings['signup_bonus']['enabled'] ) ) {
             return 0;
         }
-        $points = isset( $settings['signup_bonus']['points'] ) ? (int) $settings['signup_bonus']['points'] : 0;
+        $points = (int) ( $settings['signup_bonus']['points'] ?? 0 );
         $awarded = (bool) get_user_meta( $user_id, '_wclr_signup_awarded', true );
         if ( $awarded || $points <= 0 ) {
             return 0;
@@ -178,8 +178,8 @@ class Points_Service {
 
         // Skip earning if any applied coupon is in the exclusion list (only if exclusion is enabled).
         if ( ! empty( $settings['order_earning']['exclude_coupons_enabled'] ) ) {
-            $excluded_coupons = isset( $settings['order_earning']['exclude_coupons'] ) && is_array( $settings['order_earning']['exclude_coupons'] ) ? $settings['order_earning']['exclude_coupons'] : [];
-            if ( ! empty( $excluded_coupons ) ) {
+            $excluded_coupons = $settings['order_earning']['exclude_coupons'] ?? [];
+            if ( ! empty( $excluded_coupons ) && is_array( $excluded_coupons ) ) {
                 $applied_coupons = $cart->get_applied_coupons();
                 foreach ( $applied_coupons as $applied_code ) {
                     if ( in_array( $applied_code, $excluded_coupons, true ) ) {
@@ -189,8 +189,8 @@ class Points_Service {
             }
         }
 
-        $rate      = isset( $settings['base_rate'] ) ? (float) $settings['base_rate'] : 1.0;
-        $base_mult = isset( $settings['base_multiplier'] ) ? (float) $settings['base_multiplier'] : 1.0;
+        $rate      = (float) ( $settings['base_rate'] ?? 1.0 );
+        $base_mult = (float) ( $settings['base_multiplier'] ?? 1.0 );
 
         $user_id   = get_current_user_id();
         $multiplier = $base_mult;
@@ -285,7 +285,7 @@ class Points_Service {
             return 0;
         }
 
-        $points = isset( $rule['points'] ) ? (int) $rule['points'] : 0;
+        $points = (int) ( $rule['points'] ?? 0 );
         if ( $points <= 0 ) {
             return 0;
         }
@@ -331,7 +331,7 @@ class Points_Service {
         if ( empty( $settings['anniversary']['enabled'] ) ) {
             return 0;
         }
-        $points = isset( $settings['anniversary']['points'] ) ? (int) $settings['anniversary']['points'] : 0;
+        $points = (int) ( $settings['anniversary']['points'] ?? 0 );
         if ( $points <= 0 ) {
             return 0;
         }
@@ -497,106 +497,133 @@ class Points_Service {
 
     /**
      * Add points and log ledger entry.
+     * Uses transient-based locking to prevent race conditions.
      */
     public function add_points( int $user_id, int $amount, string $type, array $data ): Points_Ledger {
-        $balance          = $this->get_user_balance( $user_id );
-        $new_balance      = $balance->balance + $amount;
-        $new_lifetime     = $balance->lifetime_points;
-        if ( $type === 'earn' && $amount > 0 ) {
-            $new_lifetime += $amount;
-        }
-        if ( $type === 'adjustment' && $amount > 0 ) {
-            $new_lifetime += $amount; // Count positive admin adjustments toward lifetime.
-        }
+        // Use transient lock to prevent concurrent updates (race condition protection).
+        $lock_key = 'wclr_points_lock_' . $user_id;
+        $lock_timeout = 5; // 5 seconds max wait
 
-        $old_tier = null;
-        if ( null !== $this->tier_service ) {
-            $old_tier = $this->tier_service->get_user_tier( $user_id );
+        // Try to acquire lock (max 5 attempts with 100ms delay to avoid blocking).
+        $attempts = 0;
+        while ( false !== get_transient( $lock_key ) && $attempts < $lock_timeout ) {
+            usleep( 100000 ); // 100ms delay (non-blocking for short waits).
+            $attempts++;
         }
 
-        do_action( 'wc_loyalty_rewards_before_earn_points', $user_id, $amount, $data );
+        // Set lock for this operation (10 second expiry as safety).
+        set_transient( $lock_key, time(), 10 );
 
-        // Batch update user meta to reduce queries.
-        update_user_meta( $user_id, '_wclr_points_balance', $new_balance );
-        update_user_meta( $user_id, '_wclr_lifetime_points', $new_lifetime );
+        try {
+            $balance          = $this->get_user_balance( $user_id );
+            $new_balance      = $balance->balance + $amount;
+            $new_lifetime     = $balance->lifetime_points;
+            if ( $type === 'earn' && $amount > 0 ) {
+                $new_lifetime += $amount;
+            }
+            if ( $type === 'adjustment' && $amount > 0 ) {
+                $new_lifetime += $amount; // Count positive admin adjustments toward lifetime.
+            }
 
-        // Clear user meta cache for this user.
-        wp_cache_delete( $user_id, 'user_meta' );
+            $old_tier = null;
+            if ( null !== $this->tier_service ) {
+                $old_tier = $this->tier_service->get_user_tier( $user_id );
+            }
 
-        global $wpdb;
-        $table = $wpdb->prefix . 'wclr_points_ledger';
-        $result = $wpdb->insert( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-            $table,
-            [
-                'user_id'       => $user_id,
-                'type'          => $type,
-                'amount'        => $amount,
-                'balance_after' => $new_balance,
-                'context'       => $data['context'] ?? '',
-                'order_id'      => $data['order_id'] ?? null,
-                'admin_id'      => $data['admin_id'] ?? null,
-                'meta'          => ! empty( $data ) ? wp_json_encode( $data ) : null,
-                'created_at'    => current_time( 'mysql' ),
-            ],
-            [ '%d', '%s', '%d', '%d', '%s', '%d', '%d', '%s', '%s' ]
-        );
+            do_action( 'wc_loyalty_rewards_before_earn_points', $user_id, $amount, $data );
 
-        // Log error if insert failed.
-        if ( false === $result ) {
-            error_log( 'WCLR: Failed to insert points ledger entry. Error: ' . $wpdb->last_error ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
-        }
+            // Batch update user meta to reduce queries.
+            update_user_meta( $user_id, '_wclr_points_balance', $new_balance );
+            update_user_meta( $user_id, '_wclr_lifetime_points', $new_lifetime );
 
-        // Store pending reward notice for next page load (only for earn and positive amounts).
-        if ( 'earn' === $type && $amount > 0 ) {
-            update_user_meta(
-                $user_id,
-                '_wclr_pending_reward_notice',
+            // Clear user meta cache for this user.
+            wp_cache_delete( $user_id, 'user_meta' );
+
+            global $wpdb;
+            $table = $wpdb->prefix . 'wclr_points_ledger';
+            $result = $wpdb->insert( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+                $table,
                 [
-                    'amount'  => $amount,
-                    'balance' => $new_balance,
-                    'context' => $data['context'] ?? '',
-                    'time'    => time(),
+                    'user_id'       => $user_id,
+                    'type'          => $type,
+                    'amount'        => $amount,
+                    'balance_after' => $new_balance,
+                    'context'       => $data['context'] ?? '',
+                    'order_id'      => $data['order_id'] ?? null,
+                    'admin_id'      => $data['admin_id'] ?? null,
+                    'meta'          => ! empty( $data ) ? wp_json_encode( $data ) : null,
+                    'created_at'    => current_time( 'mysql' ),
+                ],
+                [ '%d', '%s', '%d', '%d', '%s', '%d', '%d', '%s', '%s' ]
+            );
+
+            // Log error if insert failed and throw exception for critical failures.
+            if ( false === $result ) {
+                $error_msg = 'WCLR: Failed to insert points ledger entry. Error: ' . $wpdb->last_error;
+                if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+                    error_log( $error_msg ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+                }
+                // Revert balance changes if ledger insert failed.
+                update_user_meta( $user_id, '_wclr_points_balance', $balance->balance );
+                update_user_meta( $user_id, '_wclr_lifetime_points', $balance->lifetime_points );
+                wp_cache_delete( $user_id, 'user_meta' );
+                throw new \RuntimeException( $error_msg );
+            }
+
+            // Store pending reward notice for next page load (only for earn and positive amounts).
+            if ( 'earn' === $type && $amount > 0 ) {
+                update_user_meta(
+                    $user_id,
+                    '_wclr_pending_reward_notice',
+                    [
+                        'amount'  => $amount,
+                        'balance' => $new_balance,
+                        'context' => $data['context'] ?? '',
+                        'time'    => time(),
+                    ]
+                );
+            }
+
+            do_action( 'wc_loyalty_rewards_after_earn_points', $user_id, $amount, $data );
+
+            // Detect tier changes (after meta write).
+            if ( null === $this->tier_service ) {
+                $this->tier_service = new Tier_Service();
+            }
+            $new_tier = $this->tier_service->get_user_tier( $user_id );
+            if ( ( $old_tier && ( ! $new_tier || $old_tier->id !== $new_tier->id ) ) || ( ! $old_tier && $new_tier ) ) {
+                do_action( 'wc_loyalty_rewards_user_tier_changed', $user_id, $old_tier, $new_tier );
+            }
+
+            $ledger_id = $wpdb->insert_id > 0 ? (int) $wpdb->insert_id : 0;
+
+            return new Points_Ledger(
+                [
+                    'id'            => $ledger_id,
+                    'user_id'       => $user_id,
+                    'type'          => $type,
+                    'amount'        => $amount,
+                    'balance_after' => $new_balance,
+                    'context'       => $data['context'] ?? '',
+                    'order_id'      => $data['order_id'] ?? null,
+                    'admin_id'      => $data['admin_id'] ?? null,
+                    'meta'          => ! empty( $data ) ? wp_json_encode( $data ) : null,
+                    'created_at'    => current_time( 'mysql' ),
                 ]
             );
+        } finally {
+            // Always release lock.
+            delete_transient( $lock_key );
         }
-
-        do_action( 'wc_loyalty_rewards_after_earn_points', $user_id, $amount, $data );
-
-        // Detect tier changes (after meta write).
-        if ( null === $this->tier_service ) {
-            $this->tier_service = new Tier_Service();
-        }
-        $new_tier = $this->tier_service->get_user_tier( $user_id );
-        if ( ( $old_tier && ( ! $new_tier || $old_tier->id !== $new_tier->id ) ) || ( ! $old_tier && $new_tier ) ) {
-            do_action( 'wc_loyalty_rewards_user_tier_changed', $user_id, $old_tier, $new_tier );
-        }
-
-        $ledger_id = $wpdb->insert_id > 0 ? (int) $wpdb->insert_id : 0;
-
-        return new Points_Ledger(
-            [
-                'id'            => $ledger_id,
-                'user_id'       => $user_id,
-                'type'          => $type,
-                'amount'        => $amount,
-                'balance_after' => $new_balance,
-                'context'       => $data['context'] ?? '',
-                'order_id'      => $data['order_id'] ?? null,
-                'admin_id'      => $data['admin_id'] ?? null,
-                'meta'          => ! empty( $data ) ? wp_json_encode( $data ) : null,
-                'created_at'    => current_time( 'mysql' ),
-            ]
-        );
     }
 
     /**
      * Get user balance and lifetime points.
      */
     public function get_user_balance( int $user_id ): Points_Balance {
-        // Use single meta query to reduce DB calls.
-        $meta = get_user_meta( $user_id );
-        $balance  = isset( $meta['_wclr_points_balance'] ) ? (int) $meta['_wclr_points_balance'][0] : 0;
-        $lifetime = isset( $meta['_wclr_lifetime_points'] ) ? (int) $meta['_wclr_lifetime_points'][0] : 0;
+        // Use specific meta keys to avoid loading all user meta.
+        $balance  = (int) get_user_meta( $user_id, '_wclr_points_balance', true );
+        $lifetime = (int) get_user_meta( $user_id, '_wclr_lifetime_points', true );
         return new Points_Balance( $user_id, $balance, $lifetime );
     }
 
@@ -656,7 +683,7 @@ class Points_Service {
     public function recalc_lifetime_points_all(): int {
         global $wpdb;
         $table   = $wpdb->prefix . 'wclr_points_ledger';
-        $results = $wpdb->get_results( "SELECT user_id, SUM(amount) AS total FROM {$table} WHERE type = 'earn' AND amount > 0 GROUP BY user_id", ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+        $results = $wpdb->get_results( $wpdb->prepare( "SELECT user_id, SUM(amount) AS total FROM {$table} WHERE type = %s AND amount > 0 GROUP BY user_id", 'earn' ), ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 
         // Map of user_id => lifetime from ledger.
         $ledger_totals = [];
@@ -757,7 +784,6 @@ class Points_Service {
         }
         $now = current_time( 'timestamp' );
 
-        $start_ok = true;
         if ( ! empty( $flash['start'] ) ) {
             $start_ts = strtotime( $flash['start'] );
             if ( $start_ts && $now < $start_ts ) {
@@ -765,7 +791,6 @@ class Points_Service {
             }
         }
 
-        $end_ok = true;
         if ( ! empty( $flash['end'] ) ) {
             $end_ts = strtotime( $flash['end'] );
             if ( $end_ts && $now > $end_ts ) {

@@ -112,6 +112,9 @@ class Admin_Service {
             return;
         }
 
+        // Enqueue admin CSS.
+        wp_enqueue_style( 'wclr-admin', WCLR_PLUGIN_URL . 'assets/css/admin.css', [], '1.0.0' );
+
         // WooCommerce enhanced select (Select2).
         if ( function_exists( 'WC' ) ) {
             wp_enqueue_script( 'wc-enhanced-select' );
@@ -866,6 +869,18 @@ class Admin_Service {
         $params[] = $limit;
         $sql = $wpdb->prepare( "SELECT * FROM {$table} WHERE {$where} ORDER BY created_at DESC LIMIT %d", $params ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
         $entries = $wpdb->get_results( $sql, ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
+        // Batch load user data to avoid N+1 queries.
+        $user_ids = array_unique( array_map( function( $entry ) {
+            return (int) $entry['user_id'];
+        }, $entries ) );
+        $users = [];
+        if ( ! empty( $user_ids ) ) {
+            $user_objects = get_users( [ 'include' => $user_ids, 'fields' => [ 'ID', 'user_login', 'user_email' ] ] );
+            foreach ( $user_objects as $user_obj ) {
+                $users[ $user_obj->ID ] = $user_obj;
+            }
+        }
         ?>
         <div class="wrap">
             <h1><?php esc_html_e( 'Points Ledger', 'wc-loyalty-rewards' ); ?></h1>
@@ -878,6 +893,8 @@ class Admin_Service {
                 <div class="notice notice-error"><p><?php esc_html_e( 'No file uploaded for import.', 'wc-loyalty-rewards' ); ?></p></div>
             <?php elseif ( isset( $_GET['wclr_import_result'] ) && 'failed_open' === $_GET['wclr_import_result'] ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?>
                 <div class="notice notice-error"><p><?php esc_html_e( 'Could not open the uploaded file.', 'wc-loyalty-rewards' ); ?></p></div>
+            <?php elseif ( isset( $_GET['wclr_import_result'] ) && 'invalid_type' === $_GET['wclr_import_result'] ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?>
+                <div class="notice notice-error"><p><?php esc_html_e( 'Invalid file type. Please upload a CSV file.', 'wc-loyalty-rewards' ); ?></p></div>
             <?php elseif ( isset( $_GET['wclr_recalc'] ) && 'success' === $_GET['wclr_recalc'] ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?>
                 <div class="notice notice-success">
                     <p><?php echo esc_html( sprintf( __( 'Lifetime recalculated for %d users.', 'wc-loyalty-rewards' ), (int) ( $_GET['updated'] ?? 0 ) ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?></p>
@@ -885,7 +902,7 @@ class Admin_Service {
             <?php endif; ?>
 
             <div id="poststuff">
-                <div class="postbox" style="margin-top: 15px;">
+                <div class="postbox wclr-postbox">
                     <div class="postbox-header"><h2 class="hndle"><span><?php esc_html_e( 'Filter Ledger', 'wc-loyalty-rewards' ); ?></span></h2></div>
                     <div class="inside">
                         <form method="get">
@@ -935,10 +952,14 @@ class Admin_Service {
                 </tr>
                 </thead>
                 <tbody>
-                <?php foreach ( $entries as $entry ) : ?>
+                <?php foreach ( $entries as $entry ) :
+                    $user_id = (int) $entry['user_id'];
+                    $user = $users[ $user_id ] ?? null;
+                    $user_display = $user ? $user->user_login : sprintf( __( 'User #%d', 'wc-loyalty-rewards' ), $user_id );
+                ?>
                     <tr>
                         <td><?php echo esc_html( $entry['created_at'] ); ?></td>
-                        <td><?php echo esc_html( get_userdata( (int) $entry['user_id'] )->user_login ?? '' ); ?></td>
+                        <td><?php echo esc_html( $user_display ); ?></td>
                         <td><?php echo esc_html( $entry['type'] ); ?></td>
                         <td><?php echo esc_html( $entry['amount'] ); ?></td>
                         <td><?php echo esc_html( $entry['balance_after'] ); ?></td>
@@ -965,7 +986,7 @@ class Admin_Service {
             <p class="description"><?php esc_html_e( 'Import/export points and recalculate lifetime points.', 'wc-loyalty-rewards' ); ?></p>
 
             <div class="metabox-holder">
-                <div class="postbox">
+                <div class="postbox wclr-utilities-postbox">
                     <div class="postbox-header"><h2 class="hndle"><span><?php esc_html_e( 'Export Points', 'wc-loyalty-rewards' ); ?></span></h2></div>
                     <div class="inside">
                         <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
@@ -977,7 +998,7 @@ class Admin_Service {
                     </div>
                 </div>
 
-                <div class="postbox">
+                <div class="postbox wclr-utilities-postbox">
                     <div class="postbox-header"><h2 class="hndle"><span><?php esc_html_e( 'Import Points', 'wc-loyalty-rewards' ); ?></span></h2></div>
                     <div class="inside">
                         <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" enctype="multipart/form-data">
@@ -993,7 +1014,7 @@ class Admin_Service {
                     </div>
                 </div>
 
-                <div class="postbox">
+                <div class="postbox wclr-utilities-postbox">
                     <div class="postbox-header"><h2 class="hndle"><span><?php esc_html_e( 'Recalculate Lifetime Points', 'wc-loyalty-rewards' ); ?></span></h2></div>
                     <div class="inside">
                         <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
@@ -1293,6 +1314,36 @@ class Admin_Service {
             exit;
         }
 
+        // Validate file type for security.
+        $file_name = isset( $_FILES['wclr_points_file']['name'] ) ? sanitize_file_name( wp_unslash( $_FILES['wclr_points_file']['name'] ) ) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+        $file_type = wp_check_filetype( $file_name );
+
+        // Check both extension and MIME type.
+        if ( 'csv' !== strtolower( $file_type['ext'] ) ) {
+            wp_safe_redirect(
+                add_query_arg(
+                    'wclr_import_result',
+                    'invalid_type',
+                    admin_url( 'admin.php?page=wclr-ledger' )
+                )
+            );
+            exit;
+        }
+
+        // Additional MIME type check.
+        $allowed_mimes = [ 'text/csv', 'text/plain', 'application/csv', 'application/vnd.ms-excel' ];
+        $uploaded_mime = isset( $_FILES['wclr_points_file']['type'] ) ? sanitize_mime_type( $_FILES['wclr_points_file']['type'] ) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+        if ( ! empty( $uploaded_mime ) && ! in_array( $uploaded_mime, $allowed_mimes, true ) ) {
+            wp_safe_redirect(
+                add_query_arg(
+                    'wclr_import_result',
+                    'invalid_type',
+                    admin_url( 'admin.php?page=wclr-ledger' )
+                )
+            );
+            exit;
+        }
+
         $file   = $_FILES['wclr_points_file']['tmp_name']; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
         $handle = fopen( $file, 'r' );
         if ( ! $handle ) {
@@ -1415,7 +1466,7 @@ class Admin_Service {
         $tier     = $this->tiers->get_user_tier( $user->ID );
         ?>
         <h2><?php esc_html_e( 'Loyalty & Rewards', 'wc-loyalty-rewards' ); ?></h2>
-        <table class="form-table">
+        <table class="form-table wclr-user-profile-table">
             <tr>
                 <th><?php esc_html_e( 'Current Balance', 'wc-loyalty-rewards' ); ?></th>
                 <td><?php echo esc_html( $balance->balance ); ?></td>

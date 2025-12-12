@@ -55,7 +55,7 @@ class Earning_Rules_Manager {
         }
 
         // Get configured order statuses (default to 'wc-completed' to match stored format)
-        $allowed_statuses = isset( $settings['order_earning']['order_statuses'] ) && is_array( $settings['order_earning']['order_statuses'] )
+        $allowed_statuses = is_array( $settings['order_earning']['order_statuses'] ?? null )
             ? $settings['order_earning']['order_statuses']
             : [ 'wc-completed' ]; // Default matches wc_get_order_statuses() format
 
@@ -78,8 +78,8 @@ class Earning_Rules_Manager {
 
         $user_id = $order->get_user_id();
         $mult    = $user_id ? $this->tiers->get_multiplier_for_user( $user_id ) : 1.0;
-        $rate     = isset( $settings['base_rate'] ) ? (float) $settings['base_rate'] : 1.0;
-        $base_mult = isset( $settings['base_multiplier'] ) ? (float) $settings['base_multiplier'] : 1.0;
+        $rate     = (float) ( $settings['base_rate'] ?? 1.0 );
+        $base_mult = (float) ( $settings['base_multiplier'] ?? 1.0 );
 
         $this->points->earn_for_order( $order, $mult * $base_mult, $rate );
     }

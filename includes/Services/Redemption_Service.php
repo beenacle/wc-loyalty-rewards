@@ -70,7 +70,7 @@ class Redemption_Service {
      * Render UI in cart.
      */
     public function render_cart_ui(): void {
-        $settings = get_option( 'wclr_settings', [] );
+        $settings = Settings_Cache::get();
         if ( ! empty( $settings['display']['show_cart'] ) ) {
             echo $this->render_redeem_block();
         }
@@ -80,7 +80,7 @@ class Redemption_Service {
      * Render UI in checkout.
      */
     public function render_checkout_ui(): void {
-        $settings = get_option( 'wclr_settings', [] );
+        $settings = Settings_Cache::get();
         if ( ! empty( $settings['display']['show_checkout'] ) ) {
             echo $this->render_redeem_block();
         }
@@ -102,8 +102,8 @@ class Redemption_Service {
 
         // Skip redemption if any applied coupon is in the exclusion list (only if exclusion is enabled).
         if ( ! empty( $config['exclude_coupons_enabled'] ) ) {
-            $excluded_coupons = isset( $config['exclude_coupons'] ) && is_array( $config['exclude_coupons'] ) ? $config['exclude_coupons'] : [];
-            if ( ! empty( $excluded_coupons ) ) {
+            $excluded_coupons = $config['exclude_coupons'] ?? [];
+            if ( ! empty( $excluded_coupons ) && is_array( $excluded_coupons ) ) {
                 $applied_coupons = $cart->get_applied_coupons();
                 foreach ( $applied_coupons as $applied_code ) {
                     if ( in_array( $applied_code, $excluded_coupons, true ) ) {
@@ -121,8 +121,8 @@ class Redemption_Service {
         }
 
         $balance = $this->points->get_user_balance( $user_id )->balance;
-        $ratio_points = isset( $config['points_per_unit'] ) ? (int) $config['points_per_unit'] : 100;
-        $ratio_value  = isset( $config['unit_value'] ) ? (float) $config['unit_value'] : 1.0;
+        $ratio_points = (int) ( $config['points_per_unit'] ?? 100 );
+        $ratio_value  = (float) ( $config['unit_value'] ?? 1.0 );
         if ( $ratio_points <= 0 || $ratio_value <= 0 ) {
             return;
         }
@@ -137,10 +137,6 @@ class Redemption_Service {
             WC()->session->set( 'wclr_points_to_redeem', $points_to_redeem );
         }
 
-        if ( $points_to_redeem <= 0 ) {
-            return;
-        }
-
         $points_to_redeem = min( $points_to_redeem, $balance );
         if ( $points_to_redeem <= 0 ) {
             return;
@@ -148,7 +144,7 @@ class Redemption_Service {
 
         $discount = ( $points_to_redeem / $ratio_points ) * $ratio_value;
 
-        $max_percent = isset( $config['max_percent'] ) ? (float) $config['max_percent'] : 0;
+        $max_percent = (float) ( $config['max_percent'] ?? 0 );
         if ( $max_percent > 0 ) {
             $max_discount = ( $cart->get_subtotal() ) * ( $max_percent / 100 );
             $discount     = min( $discount, $max_discount );
@@ -200,18 +196,19 @@ class Redemption_Service {
         $current         = (int) WC()->session->get( 'wclr_points_to_redeem', 0 );
         $manual_override = WC()->session->get( 'wclr_manual_override', false );
         $auto_mode       = ! empty( $config['auto_mode'] ) && 'disabled' !== $config['auto_mode'];
-        $show_auto_check = $auto_mode; // Show checkbox only if auto mode is enabled
         $cart            = WC()->cart;
-        $estimated       = ( $cart && ! $cart->is_empty() ) ? $this->estimate_points_for_cart( $cart, $user_id ) : null;
+        $estimated       = ( $cart && ! $cart->is_empty() ) ? $this->points->estimate_cart_points( $cart ) : null;
         $redemption_blocked_by_coupon = false;
         if ( ! empty( $config['exclude_coupons_enabled'] ) ) {
-            $excluded_coupons = isset( $config['exclude_coupons'] ) && is_array( $config['exclude_coupons'] ) ? $config['exclude_coupons'] : [];
-            $applied_coupons = $cart ? $cart->get_applied_coupons() : [];
-            if ( ! empty( $excluded_coupons ) && ! empty( $applied_coupons ) ) {
-                foreach ( $applied_coupons as $applied_code ) {
-                    if ( in_array( $applied_code, $excluded_coupons, true ) ) {
-                        $redemption_blocked_by_coupon = true;
-                        break;
+            $excluded_coupons = $config['exclude_coupons'] ?? [];
+            if ( ! empty( $excluded_coupons ) && is_array( $excluded_coupons ) ) {
+                $applied_coupons = $cart ? $cart->get_applied_coupons() : [];
+                if ( ! empty( $applied_coupons ) ) {
+                    foreach ( $applied_coupons as $applied_code ) {
+                        if ( in_array( $applied_code, $excluded_coupons, true ) ) {
+                            $redemption_blocked_by_coupon = true;
+                            break;
+                        }
                     }
                 }
             }
@@ -226,7 +223,7 @@ class Redemption_Service {
                 <p class="wclr-auto-notice"><?php echo esc_html( sprintf( __( 'Estimated points you will earn for this order: %d', 'wc-loyalty-rewards' ), $estimated ) ); ?></p>
             <?php endif; ?>
             <?php if ( $redemption_blocked_by_coupon ) : ?>
-                <p class="wclr-auto-notice" style="background: #fff3cd; border-color: #ffc107;"><em><?php esc_html_e( 'Point redemption is disabled when coupons are applied.', 'wc-loyalty-rewards' ); ?></em></p>
+                <p class="wclr-auto-notice wclr-warning-notice"><em><?php esc_html_e( 'Point redemption is disabled when coupons are applied.', 'wc-loyalty-rewards' ); ?></em></p>
             <?php elseif ( $auto_mode && ! $manual_override ) : ?>
                 <p class="wclr-auto-notice"><em><?php esc_html_e( 'Auto redeem is active. Enter a custom amount below to override.', 'wc-loyalty-rewards' ); ?></em></p>
             <?php endif; ?>
@@ -236,8 +233,8 @@ class Redemption_Service {
                     <label for="wclr_points_to_redeem"><?php esc_html_e( 'Points to redeem', 'wc-loyalty-rewards' ); ?></label>
                     <input type="number" min="0" step="1" id="wclr_points_to_redeem" name="wclr_points_to_redeem" value="<?php echo esc_attr( $current ); ?>" />
                     <button type="submit" class="button"><?php esc_html_e( 'Apply', 'wc-loyalty-rewards' ); ?></button>
-                    <?php if ( $show_auto_check && $manual_override ) : ?>
-                        <label style="display: block; margin-top: 10px;">
+                    <?php if ( $auto_mode && $manual_override ) : ?>
+                        <label class="wclr-auto-checkbox-label">
                             <input type="checkbox" name="wclr_use_auto" value="1" />
                             <?php esc_html_e( 'Re-enable auto redeem', 'wc-loyalty-rewards' ); ?>
                         </label>
@@ -266,52 +263,6 @@ class Redemption_Service {
         return 0;
     }
 
-    /**
-     * Estimate points for current cart (used for display only).
-     */
-    private function estimate_points_for_cart( WC_Cart $cart, int $user_id ): ?int {
-        $settings = get_option( 'wclr_settings', [] );
-        if ( empty( $settings['order_earning']['enabled'] ) ) {
-            return null;
-        }
-
-        // If any applied coupon is in the exclusion list, return 0 (only if exclusion is enabled).
-        if ( ! empty( $settings['order_earning']['exclude_coupons_enabled'] ) ) {
-            $excluded_coupons = isset( $settings['order_earning']['exclude_coupons'] ) && is_array( $settings['order_earning']['exclude_coupons'] ) ? $settings['order_earning']['exclude_coupons'] : [];
-            if ( ! empty( $excluded_coupons ) ) {
-                $applied_coupons = $cart->get_applied_coupons();
-                foreach ( $applied_coupons as $applied_code ) {
-                    if ( in_array( $applied_code, $excluded_coupons, true ) ) {
-                        return 0;
-                    }
-                }
-            }
-        }
-
-        $include_tax      = ! empty( $settings['order_earning']['include_tax'] );
-        $include_shipping = ! empty( $settings['order_earning']['include_shipping'] );
-        $min_order        = isset( $settings['order_earning']['min_order'] ) ? (float) $settings['order_earning']['min_order'] : 0;
-
-        $subtotal = (float) $cart->get_subtotal();
-        if ( $include_tax ) {
-            $subtotal += (float) $cart->get_subtotal_tax();
-        }
-        if ( $include_shipping ) {
-            $subtotal += (float) $cart->get_shipping_total();
-        }
-
-        if ( $subtotal < $min_order ) {
-            return 0;
-        }
-
-        $rate       = isset( $settings['base_rate'] ) ? (float) $settings['base_rate'] : 1.0;
-        $base_mult  = isset( $settings['base_multiplier'] ) ? (float) $settings['base_multiplier'] : 1.0;
-        $tier_mult  = $this->tiers->get_multiplier_for_user( $user_id );
-        $multiplier = $base_mult * $tier_mult;
-
-        $points = (int) floor( $subtotal * $rate * $multiplier );
-        return max( 0, $points );
-    }
 
     /**
      * Checkout fragments refresh to update block dynamically.

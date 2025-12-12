@@ -126,8 +126,8 @@ class Referral_Service {
             return;
         }
 
-        $referrer_points = isset( $settings['referral']['referrer_bonus'] ) ? (int) $settings['referral']['referrer_bonus'] : 0;
-        $referred_points = isset( $settings['referral']['referred_bonus'] ) ? (int) $settings['referral']['referred_bonus'] : 0;
+        $referrer_points = (int) ( $settings['referral']['referrer_bonus'] ?? 0 );
+        $referred_points = (int) ( $settings['referral']['referred_bonus'] ?? 0 );
 
         $this->points_service->earn_for_referral( $referrer_id, $user_id, $order, $referrer_points, $referred_points );
 
@@ -187,7 +187,9 @@ class Referral_Service {
     public function capture_ref_param(): void {
         if ( isset( $_GET['ref'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification
             $code = sanitize_text_field( wp_unslash( $_GET['ref'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-            setcookie( 'wclr_ref', $code, time() + MONTH_IN_SECONDS, COOKIEPATH, COOKIE_DOMAIN );
+            // Set secure cookie with httponly flag for better security.
+            $secure = is_ssl();
+            setcookie( 'wclr_ref', $code, time() + MONTH_IN_SECONDS, COOKIEPATH, COOKIE_DOMAIN, $secure, true );
         }
     }
 

@@ -158,8 +158,8 @@ class Installer {
      */
     private function maybe_seed_tiers(): void {
         global $wpdb;
-        $table = "{$wpdb->prefix}wclr_tiers";
-        $count = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table}" ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+        $table = $wpdb->prefix . 'wclr_tiers';
+        $count = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$table}", array() ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
         if ( $count > 0 ) {
             return;
         }

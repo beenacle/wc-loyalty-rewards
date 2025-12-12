@@ -12,32 +12,159 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for tags
 
-      - uses: php-actions/composer@v6
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          echo "Extracted version: $VERSION"
+
+      - name: Validate PHP syntax
+        run: |
+          set +e  # Don't exit on error, we'll check the result
+          ERRORS=$(find . -name "*.php" -not -path "./vendor/*" -not -path "./dist/*" -exec php -l {} \; 2>&1 | grep -v "No syntax errors" || true)
+          if [ -n "$ERRORS" ]; then
+            echo "PHP syntax errors found:"
+            echo "$ERRORS"
+            exit 1
+          fi
+          echo "PHP syntax validation passed"
+
+      - name: Install Composer dependencies
+        uses: php-actions/composer@v6
         with:
           php_version: "8.2"
           args: --no-dev --optimize-autoloader
 
       - name: Build zip
+        id: build
         run: |
+          set -e  # Exit on error
           SLUG=wc-loyalty-rewards
           mkdir -p dist/$SLUG
+
+          # Sync files with exclusions
           rsync -a --delete \
-            --exclude=".git*" \
-            --exclude=".github" \
-            --exclude="dist" \
-            --exclude="node_modules" \
-            --exclude="DOCKER_ENV" \
-            --exclude="docker_tag" \
-            --exclude="Dockerfile-php-build" \
-            --exclude="*.log" \
-            --exclude="output.log" \
+            --exclude='.git*' \
+            --exclude='.github' \
+            --exclude='.gitignore' \
+            --exclude='.DS_Store' \
+            --exclude='dist' \
+            --exclude='node_modules' \
+            --exclude='DOCKER_ENV' \
+            --exclude='docker_tag' \
+            --exclude='Dockerfile-php-build' \
+            --exclude='*.log' \
+            --exclude='output.log' \
+            --exclude='composer.lock' \
+            --exclude='CHANGELOG.md' \
+            --exclude='*.md' \
             ./ dist/$SLUG/
+
+          # Remove any files that shouldn't be in the release (redundant but safe)
+          rm -f dist/$SLUG/composer.lock
+          rm -f dist/$SLUG/CHANGELOG.md
+          rm -f dist/$SLUG/.DS_Store
+          # Note: *.md files already excluded by rsync, but remove any that might have slipped through
+          find dist/$SLUG -name "*.md" -not -name "README.md" -delete 2>/dev/null || true
+
+          # Validate plugin file exists
+          if [ ! -f "dist/$SLUG/wc-loyalty-rewards.php" ]; then
+            echo "Error: Plugin file not found!"
+            exit 1
+          fi
+
           cd dist
           zip -r ${SLUG}.zip ${SLUG}
+
+          # Validate ZIP was created
+          if [ ! -f "${SLUG}.zip" ]; then
+            echo "Error: ZIP file not created!"
+            exit 1
+          fi
+
+          # Get file size
+          ZIP_SIZE=$(stat -f%z "${SLUG}.zip" 2>/dev/null || stat -c%s "${SLUG}.zip" 2>/dev/null || echo "0")
+          echo "ZIP size: $ZIP_SIZE bytes"
+
+          if [ "$ZIP_SIZE" -lt 1000 ]; then
+            echo "Error: ZIP file too small, build may have failed!"
+            exit 1
+          fi
+
+          echo "zip_path=dist/${SLUG}.zip" >> $GITHUB_OUTPUT
+          echo "zip_size=$ZIP_SIZE" >> $GITHUB_OUTPUT
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          md5sum wc-loyalty-rewards.zip > wc-loyalty-rewards.zip.md5
+          sha256sum wc-loyalty-rewards.zip > wc-loyalty-rewards.zip.sha256
+          echo "Checksums generated"
+
+      - name: Prepare release notes
+        id: release_notes
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          if [ -f "CHANGELOG.md" ]; then
+            # Extract changelog entry for this version (handles both "## 1.0.0" and "## v1.0.0" formats)
+            awk -v version="$VERSION" '
+              BEGIN { found=0; in_section=0 }
+              /^## / {
+                if (in_section) exit
+                if ($0 ~ "^## " version "$" || $0 ~ "^## v" version "$") {
+                  found=1
+                  in_section=1
+                  print
+                  next
+                }
+              }
+              in_section { print }
+            ' CHANGELOG.md > release_notes.txt
+
+            # If no changelog entry found, create default
+            if [ ! -s release_notes.txt ]; then
+              echo "## Version $VERSION" > release_notes.txt
+              echo "" >> release_notes.txt
+              echo "Release ${{ steps.version.outputs.tag }}" >> release_notes.txt
+            fi
+          else
+            echo "## Version $VERSION" > release_notes.txt
+            echo "" >> release_notes.txt
+            echo "Release ${{ steps.version.outputs.tag }}" >> release_notes.txt
+          fi
+
+          # Add checksums to release notes
+          echo "" >> release_notes.txt
+          echo "### Checksums" >> release_notes.txt
+          echo "\`\`\`" >> release_notes.txt
+          echo "MD5: $(cat dist/wc-loyalty-rewards.zip.md5 | cut -d' ' -f1)" >> release_notes.txt
+          echo "SHA256: $(cat dist/wc-loyalty-rewards.zip.sha256 | cut -d' ' -f1)" >> release_notes.txt
+          echo "\`\`\`" >> release_notes.txt
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-zip
+          path: dist/wc-loyalty-rewards.zip
+          retention-days: 30
 
       - name: Create Release + upload asset
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/wc-loyalty-rewards.zip
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Release ${{ steps.version.outputs.version }}
+          body_path: release_notes.txt
+          files: |
+            dist/wc-loyalty-rewards.zip
+            dist/wc-loyalty-rewards.zip.md5
+            dist/wc-loyalty-rewards.zip.sha256
+          draft: false
+          prerelease: false
