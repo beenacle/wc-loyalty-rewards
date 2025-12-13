@@ -3,6 +3,8 @@
 ## 1.0.7
 - Fixed CSS and JS asset versioning to use plugin version instead of hardcoded '1.0.0'
 - Assets now properly cache-bust when plugin version is updated
+- Fixed missing return statement after wp_send_json_error() in AJAX redemption handler
+- Fixed fee name detection mismatch - redemption discount now properly subtracted when calculating earned points
 
 ## 1.0.6
 - Fixed race condition in points locking mechanism that could cause duplicate ledger entries or incorrect balance calculations
