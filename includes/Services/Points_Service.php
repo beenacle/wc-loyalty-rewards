@@ -99,7 +99,13 @@ class Points_Service {
         foreach ( $fees as $fee ) {
             $fee_name = $fee->get_name();
             // Check if this is our loyalty points discount fee
-            if ( __( 'Loyalty Points', 'wc-loyalty-rewards' ) === $fee_name || 'Loyalty Points' === $fee_name ) {
+            // Match both old format ('Loyalty Points') and new format ('🎁 Points Redeemed: X')
+            $is_old_format = ( __( 'Loyalty Points', 'wc-loyalty-rewards' ) === $fee_name || 'Loyalty Points' === $fee_name );
+            // New format uses sprintf with translated string '🎁 Points Redeemed: %s'
+            // Check if fee name starts with the translated prefix (without the %s placeholder)
+            $points_redeemed_prefix = str_replace( '%s', '', __( '🎁 Points Redeemed: %s', 'wc-loyalty-rewards' ) );
+            $is_new_format = ( false !== strpos( $fee_name, $points_redeemed_prefix ) || false !== strpos( $fee_name, 'Points Redeemed' ) );
+            if ( $is_old_format || $is_new_format ) {
                 $fee_amount = (float) $fee->get_total();
                 // Fee amount is negative (discount), so subtract it (which adds to subtotal)
                 $subtotal += $fee_amount; // Adding negative number = subtracting

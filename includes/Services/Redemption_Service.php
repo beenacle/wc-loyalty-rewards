@@ -78,6 +78,7 @@ class Redemption_Service {
         $config   = $settings['redemption'] ?? [];
         if ( empty( $config['allow_manual_input'] ) ) {
             wp_send_json_error( [ 'message' => __( 'Manual input is disabled.', 'wc-loyalty-rewards' ) ] );
+            return; // Explicit return after wp_send_json_error() for clarity
         }
 
         $points = isset( $_POST['points'] ) ? (int) wp_unslash( $_POST['points'] ) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Missing, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
