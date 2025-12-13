@@ -30,13 +30,15 @@ class Redemption_Service {
         add_filter( 'woocommerce_update_order_review_fragments', [ $this, 'filter_checkout_fragments' ] );
         add_filter( 'woocommerce_add_to_cart_fragments', [ $this, 'filter_cart_fragments' ] );
         add_shortcode( 'wclr_redeem_widget', [ $this, 'shortcode_redeem_widget' ] );
+        add_action( 'wp_ajax_wclr_redeem_points', [ $this, 'handle_ajax_redeem' ] );
+        add_action( 'wp_ajax_nopriv_wclr_redeem_points', [ $this, 'handle_ajax_redeem' ] );
     }
 
     /**
-     * Process incoming redeem form submission.
+     * Process incoming redeem form submission (non-AJAX fallback).
      */
     public function maybe_capture_redeem_request(): void {
-        if ( is_admin() ) {
+        if ( is_admin() || wp_doing_ajax() ) {
             return;
         }
         $settings = Settings_Cache::get();
@@ -52,18 +54,78 @@ class Redemption_Service {
             return;
         }
         $points = isset( $_POST['wclr_points_to_redeem'] ) ? (int) wp_unslash( $_POST['wclr_points_to_redeem'] ) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Missing, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
-        $use_auto = isset( $_POST['wclr_use_auto'] ) && ! empty( $_POST['wclr_use_auto'] ); // phpcs:ignore WordPress.Security.NonceVerification.Missing
 
-        if ( $use_auto ) {
-            // User wants to re-enable auto mode
-            WC()->session->__unset( 'wclr_manual_override' );
-        } else {
-            // User manually set points - disable auto mode
+        // If points are manually entered, set manual override
+        if ( $points > 0 ) {
             WC()->session->set( 'wclr_manual_override', true );
+            WC()->session->set( 'wclr_points_to_redeem', $points );
+        } else {
+            // If 0, clear manual override to return to auto mode
+            WC()->session->__unset( 'wclr_manual_override' );
+            WC()->session->set( 'wclr_points_to_redeem', 0 );
         }
 
-        WC()->session->set( 'wclr_points_to_redeem', max( 0, $points ) );
         wc_add_notice( esc_html__( 'Your points preference has been updated.', 'wc-loyalty-rewards' ), 'success' );
+    }
+
+    /**
+     * Handle AJAX redemption request.
+     */
+    public function handle_ajax_redeem(): void {
+        check_ajax_referer( 'wclr_redeem_points', 'nonce' );
+
+        $settings = Settings_Cache::get();
+        $config   = $settings['redemption'] ?? [];
+        if ( empty( $config['allow_manual_input'] ) ) {
+            wp_send_json_error( [ 'message' => __( 'Manual input is disabled.', 'wc-loyalty-rewards' ) ] );
+        }
+
+        $points = isset( $_POST['points'] ) ? (int) wp_unslash( $_POST['points'] ) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Missing, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+
+        // If points are manually entered, set manual override
+        if ( $points > 0 ) {
+            WC()->session->set( 'wclr_manual_override', true );
+            WC()->session->set( 'wclr_points_to_redeem', $points );
+        } else {
+            // If 0, clear manual override to return to auto mode
+            WC()->session->__unset( 'wclr_manual_override' );
+            WC()->session->set( 'wclr_points_to_redeem', 0 );
+        }
+
+        // Trigger cart recalculation
+        if ( WC()->cart && ! WC()->cart->is_empty() ) {
+            WC()->cart->calculate_totals();
+        }
+
+        // Get updated fragments for checkout/cart
+        $fragments = [];
+
+        // Add redemption block fragment
+        $html = $this->render_redeem_block();
+        if ( $html ) {
+            $fragments['.wclr-redeem-block-wrapper'] = $html;
+        }
+
+        // Add cart totals fragment for checkout
+        if ( is_checkout() ) {
+            ob_start();
+            woocommerce_checkout_coupon_form();
+            woocommerce_checkout_login_form();
+            woocommerce_order_review();
+            $fragments['.woocommerce-checkout-review-order'] = ob_get_clean();
+        }
+
+        // Add cart totals fragment for cart page
+        if ( is_cart() ) {
+            ob_start();
+            woocommerce_cart_totals();
+            $fragments['.cart_totals'] = ob_get_clean();
+        }
+
+        wp_send_json_success( [
+            'message'   => __( 'Points updated successfully.', 'wc-loyalty-rewards' ),
+            'fragments' => $fragments,
+        ] );
     }
 
     /**
@@ -156,7 +218,14 @@ class Redemption_Service {
         }
 
         WC()->session->set( 'wclr_points_to_redeem', $points_to_redeem );
-        $cart->add_fee( __( 'Loyalty Points', 'wc-loyalty-rewards' ), -1 * $discount );
+
+        // Include points in fee name for clear display
+        $fee_name = sprintf(
+            /* translators: 1: points amount */
+            __( '🎁 Points Redeemed: %s', 'wc-loyalty-rewards' ),
+            number_format_i18n( $points_to_redeem )
+        );
+        $cart->add_fee( $fee_name, -1 * $discount );
     }
 
     /**
@@ -192,12 +261,24 @@ class Redemption_Service {
         if ( ! $user_id ) {
             return '';
         }
+
+        // Clear manual override on initial page load (not AJAX) to reset to auto redeem on refresh
+        if ( ! wp_doing_ajax() && ! isset( $_POST['wclr_redeem_nonce'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Missing
+            WC()->session->__unset( 'wclr_manual_override' );
+        }
+
         $balance         = $this->points->get_user_balance( $user_id )->balance;
         $current         = (int) WC()->session->get( 'wclr_points_to_redeem', 0 );
         $manual_override = WC()->session->get( 'wclr_manual_override', false );
         $auto_mode       = ! empty( $config['auto_mode'] ) && 'disabled' !== $config['auto_mode'];
         $cart            = WC()->cart;
         $estimated       = ( $cart && ! $cart->is_empty() ) ? $this->points->estimate_cart_points( $cart ) : null;
+
+        // Calculate auto-redeemed points for display
+        $auto_redeemed_points = 0;
+        if ( $auto_mode && ! $manual_override && $current > 0 ) {
+            $auto_redeemed_points = $current;
+        }
         $redemption_blocked_by_coupon = false;
         if ( ! empty( $config['exclude_coupons_enabled'] ) ) {
             $excluded_coupons = $config['exclude_coupons'] ?? [];
@@ -217,31 +298,92 @@ class Redemption_Service {
         ?>
         <div class="wclr-redeem-block-wrapper">
         <div class="wclr-redeem-block">
-            <p><strong><?php esc_html_e( 'Use your loyalty points', 'wc-loyalty-rewards' ); ?></strong></p>
-            <p><?php echo esc_html( sprintf( __( 'You have %d points.', 'wc-loyalty-rewards' ), $balance ) ); ?></p>
+            <div class="wclr-redeem-header">
+                <div class="wclr-redeem-title-section">
+                    <span class="wclr-redeem-icon">🎁</span>
+                    <h3 class="wclr-redeem-title"><?php esc_html_e( 'Use your loyalty points', 'wc-loyalty-rewards' ); ?></h3>
+                </div>
+                <div class="wclr-redeem-balance">
+                    <span class="wclr-balance-label"><?php esc_html_e( 'Available:', 'wc-loyalty-rewards' ); ?></span>
+                    <span class="wclr-balance-amount"><?php echo esc_html( number_format_i18n( $balance ) ); ?> <?php esc_html_e( 'points', 'wc-loyalty-rewards' ); ?></span>
+                </div>
+            </div>
+
             <?php if ( null !== $estimated ) : ?>
-                <p class="wclr-auto-notice"><?php echo esc_html( sprintf( __( 'Estimated points you will earn for this order: %d', 'wc-loyalty-rewards' ), $estimated ) ); ?></p>
+                <div class="wclr-earn-preview">
+                    <span class="wclr-earn-icon">✨</span>
+                    <span class="wclr-earn-text"><?php echo esc_html( sprintf( __( 'You\'ll earn %d points on this order', 'wc-loyalty-rewards' ), $estimated ) ); ?></span>
+                </div>
             <?php endif; ?>
+
             <?php if ( $redemption_blocked_by_coupon ) : ?>
-                <p class="wclr-auto-notice wclr-warning-notice"><em><?php esc_html_e( 'Point redemption is disabled when coupons are applied.', 'wc-loyalty-rewards' ); ?></em></p>
+                <div class="wclr-auto-notice wclr-warning-notice">
+                    <span class="wclr-notice-icon">⚠️</span>
+                    <span class="wclr-notice-text"><?php esc_html_e( 'Point redemption is disabled when coupons are applied.', 'wc-loyalty-rewards' ); ?></span>
+                </div>
+            <?php elseif ( $auto_mode && ! $manual_override && $auto_redeemed_points > 0 ) : ?>
+                <div class="wclr-auto-redeem-info">
+                    <div class="wclr-auto-redeem-header">
+                        <span class="wclr-notice-icon">⚡</span>
+                        <span class="wclr-auto-redeem-text">
+                            <?php
+                            echo esc_html(
+                                sprintf(
+                                    /* translators: 1: points amount */
+                                    __( 'Auto redeemed: %s points', 'wc-loyalty-rewards' ),
+                                    number_format_i18n( $auto_redeemed_points )
+                                )
+                            );
+                            ?>
+                        </span>
+                        <?php if ( ! empty( $config['allow_manual_input'] ) ) : ?>
+                            <button type="button" class="wclr-edit-link" aria-expanded="false" aria-controls="wclr-manual-input-section">
+                                <?php esc_html_e( 'edit', 'wc-loyalty-rewards' ); ?>
+                            </button>
+                        <?php endif; ?>
+                    </div>
+                </div>
             <?php elseif ( $auto_mode && ! $manual_override ) : ?>
-                <p class="wclr-auto-notice"><em><?php esc_html_e( 'Auto redeem is active. Enter a custom amount below to override.', 'wc-loyalty-rewards' ); ?></em></p>
+                <div class="wclr-auto-notice">
+                    <span class="wclr-notice-icon">⚡</span>
+                    <span class="wclr-notice-text"><?php esc_html_e( 'Auto redeem is active.', 'wc-loyalty-rewards' ); ?></span>
+                </div>
+            <?php elseif ( $manual_override && $current > 0 ) : ?>
+                <div class="wclr-manual-redeem-info">
+                    <div class="wclr-auto-redeem-header">
+                        <span class="wclr-notice-icon">✏️</span>
+                        <span class="wclr-auto-redeem-text">
+                            <?php
+                            echo esc_html(
+                                sprintf(
+                                    /* translators: 1: points amount */
+                                    __( 'Redeeming: %s points', 'wc-loyalty-rewards' ),
+                                    number_format_i18n( $current )
+                                )
+                            );
+                            ?>
+                        </span>
+                    </div>
+                </div>
             <?php endif; ?>
+
             <?php if ( ! empty( $config['allow_manual_input'] ) && ! $redemption_blocked_by_coupon ) : ?>
-                <form method="post">
-                    <?php wp_nonce_field( 'wclr_redeem_points', 'wclr_redeem_nonce' ); ?>
-                    <label for="wclr_points_to_redeem"><?php esc_html_e( 'Points to redeem', 'wc-loyalty-rewards' ); ?></label>
-                    <input type="number" min="0" step="1" id="wclr_points_to_redeem" name="wclr_points_to_redeem" value="<?php echo esc_attr( $current ); ?>" />
-                    <button type="submit" class="button"><?php esc_html_e( 'Apply', 'wc-loyalty-rewards' ); ?></button>
-                    <?php if ( $auto_mode && $manual_override ) : ?>
-                        <label class="wclr-auto-checkbox-label">
-                            <input type="checkbox" name="wclr_use_auto" value="1" />
-                            <?php esc_html_e( 'Re-enable auto redeem', 'wc-loyalty-rewards' ); ?>
-                        </label>
-                    <?php endif; ?>
-                </form>
+                <div class="wclr-manual-input-section" id="wclr-manual-input-section" style="<?php echo ( $auto_mode && ! $manual_override ) ? 'display: none;' : 'display: block;'; ?>">
+                    <form method="post" class="wclr-redeem-form" data-wclr-ajax-redeem>
+                        <?php wp_nonce_field( 'wclr_redeem_points', 'wclr_redeem_nonce' ); ?>
+                        <div class="wclr-redeem-input-group">
+                            <div class="wclr-input-wrapper">
+                                <input type="number" min="0" step="1" max="<?php echo esc_attr( $balance ); ?>" id="wclr_points_to_redeem" name="wclr_points_to_redeem" value="<?php echo esc_attr( $current ); ?>" class="wclr-redeem-input" placeholder="0" />
+                                <button type="submit" class="wclr-redeem-button"><?php esc_html_e( 'Apply', 'wc-loyalty-rewards' ); ?></button>
+                            </div>
+                        </div>
+                    </form>
+                </div>
             <?php else : ?>
-                <p class="wclr-auto-notice"><em><?php esc_html_e( 'Manual point entry is disabled. Auto redemption will be applied if enabled.', 'wc-loyalty-rewards' ); ?></em></p>
+                <div class="wclr-auto-notice">
+                    <span class="wclr-notice-icon">ℹ️</span>
+                    <span class="wclr-notice-text"><?php esc_html_e( 'Manual point entry is disabled. Auto redemption will be applied if enabled.', 'wc-loyalty-rewards' ); ?></span>
+                </div>
             <?php endif; ?>
         </div>
         </div>
@@ -291,6 +433,7 @@ class Redemption_Service {
         }
         return $fragments;
     }
+
 
     /**
      * Shortcode handler for standalone redeem widget.

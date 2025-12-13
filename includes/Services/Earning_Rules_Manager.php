@@ -55,7 +55,7 @@ class Earning_Rules_Manager {
         }
 
         // Get configured order statuses (default to 'wc-completed' to match stored format)
-        $allowed_statuses = is_array( $settings['order_earning']['order_statuses'] ?? null )
+        $allowed_statuses = is_array( $settings['order_earning']['order_statuses'] ?? null ) && ! empty( $settings['order_earning']['order_statuses'] )
             ? $settings['order_earning']['order_statuses']
             : [ 'wc-completed' ]; // Default matches wc_get_order_statuses() format
 
@@ -64,15 +64,16 @@ class Earning_Rules_Manager {
         // Handle both formats for backward compatibility
         $normalized_allowed = array_map(
             function( $status ) {
-                // Remove 'wc-' prefix if present for comparison
-                return str_replace( 'wc-', '', $status );
+                // Remove 'wc-' prefix if present, convert to lowercase for case-insensitive comparison
+                return strtolower( str_replace( 'wc-', '', $status ) );
             },
             $allowed_statuses
         );
-        $normalized_new = str_replace( 'wc-', '', $new_status );
+        // Normalize new status: remove prefix if present and convert to lowercase
+        $normalized_new = strtolower( str_replace( 'wc-', '', $new_status ) );
 
         // Only award points if the new status is in the allowed list
-        if ( ! in_array( $normalized_new, $normalized_allowed, true ) ) {
+        if ( empty( $normalized_allowed ) || ! in_array( $normalized_new, $normalized_allowed, true ) ) {
             return;
         }
 

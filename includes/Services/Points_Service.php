@@ -93,6 +93,20 @@ class Points_Service {
             $subtotal += (float) $order->get_shipping_total();
         }
 
+        // Subtract redemption discount - points are earned on amount actually paid
+        // Check for loyalty points fee (negative fee = discount)
+        $fees = $order->get_fees();
+        foreach ( $fees as $fee ) {
+            $fee_name = $fee->get_name();
+            // Check if this is our loyalty points discount fee
+            if ( __( 'Loyalty Points', 'wc-loyalty-rewards' ) === $fee_name || 'Loyalty Points' === $fee_name ) {
+                $fee_amount = (float) $fee->get_total();
+                // Fee amount is negative (discount), so subtract it (which adds to subtotal)
+                $subtotal += $fee_amount; // Adding negative number = subtracting
+                break;
+            }
+        }
+
         if ( $subtotal < $min_order ) {
             return 0;
         }
@@ -147,6 +161,7 @@ class Points_Service {
 
     /**
      * Estimate how many points the current cart would earn.
+     * Accounts for redemption discounts - points are earned on the amount actually paid.
      *
      * @param WC_Cart|null $cart Woo cart instance.
      */
@@ -168,6 +183,48 @@ class Points_Service {
         if ( ! empty( $settings['order_earning']['include_shipping'] ) && method_exists( $cart, 'get_shipping_total' ) ) {
             $subtotal += (float) $cart->get_shipping_total();
         }
+
+        // Calculate redemption discount that will be applied
+        $redemption_discount = 0.0;
+        $config = $settings['redemption'] ?? [];
+        if ( ! empty( $config['enabled'] ) && get_current_user_id() ) {
+            $user_id = get_current_user_id();
+            $balance = $this->get_user_balance( $user_id )->balance;
+            $ratio_points = (int) ( $config['points_per_unit'] ?? 100 );
+            $ratio_value  = (float) ( $config['unit_value'] ?? 1.0 );
+
+            if ( $ratio_points > 0 && $ratio_value > 0 ) {
+                $points_to_redeem = (int) WC()->session->get( 'wclr_points_to_redeem', 0 );
+                $manual_override  = WC()->session->get( 'wclr_manual_override', false );
+
+                // If auto mode is enabled and user hasn't manually set points, calculate auto points
+                if ( ! $manual_override && ! empty( $config['auto_mode'] ) && 'disabled' !== $config['auto_mode'] ) {
+                    if ( 'max' === $config['auto_mode'] ) {
+                        $points_to_redeem = $balance;
+                    } elseif ( 'percent' === $config['auto_mode'] ) {
+                        $percent = isset( $config['auto_percent'] ) ? (int) $config['auto_percent'] : 0;
+                        $points_to_redeem = (int) floor( $balance * ( $percent / 100 ) );
+                    }
+                }
+
+                $points_to_redeem = min( $points_to_redeem, $balance );
+
+                if ( $points_to_redeem > 0 ) {
+                    $redemption_discount = ( $points_to_redeem / $ratio_points ) * $ratio_value;
+
+                    // Apply max_percent limit if set
+                    $max_percent = (float) ( $config['max_percent'] ?? 0 );
+                    if ( $max_percent > 0 ) {
+                        $max_discount = $cart->get_subtotal() * ( $max_percent / 100 );
+                        $redemption_discount = min( $redemption_discount, $max_discount );
+                    }
+                }
+            }
+        }
+
+        // Subtract redemption discount from subtotal - points are earned on amount actually paid
+        $subtotal -= $redemption_discount;
+        $subtotal = max( 0, $subtotal ); // Ensure non-negative
 
         $min_order = isset( $settings['order_earning']['min_order'] ) ? (float) $settings['order_earning']['min_order'] : 0;
         if ( $subtotal < $min_order ) {

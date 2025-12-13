@@ -31,8 +31,10 @@ class Frontend_Service {
         add_filter( 'woocommerce_account_menu_items', [ $this, 'add_account_menu_item' ] );
         add_action( 'woocommerce_account_wclr-loyalty_endpoint', [ $this, 'render_account_page' ] );
         add_action( 'wp_enqueue_scripts', [ $this, 'enqueue_assets' ] );
-        add_action( 'wp', [ $this, 'maybe_queue_reward_notice' ] );
+        add_action( 'wp', [ $this, 'maybe_queue_reward_notice' ], 20 );
+        add_action( 'wp', [ $this, 'maybe_trigger_demo_notification' ], 25 );
         add_action( 'wp_footer', [ $this, 'render_reward_notice_and_confetti' ] );
+        add_action( 'wc_loyalty_rewards_after_earn_points', [ $this, 'check_reward_notice_after_earn' ], 10, 3 );
         add_shortcode( 'wclr_points_balance', [ $this, 'shortcode_points_balance' ] );
         add_shortcode( 'wclr_tier_info', [ $this, 'shortcode_tier_info' ] );
         add_shortcode( 'wclr_referral_block', [ $this, 'shortcode_referral_block' ] );
@@ -67,7 +69,20 @@ class Frontend_Service {
     public function add_account_menu_item( array $items ): array {
         $settings = Settings_Cache::get();
         if ( ! empty( $settings['display']['show_my_account'] ) ) {
+            // Extract logout item if it exists to place it at the end
+            $logout = null;
+            if ( isset( $items['customer-logout'] ) ) {
+                $logout = $items['customer-logout'];
+                unset( $items['customer-logout'] );
+            }
+
+            // Add Loyalty & Rewards menu item
             $items['wclr-loyalty'] = __( 'Loyalty & Rewards', 'wc-loyalty-rewards' );
+
+            // Re-add logout at the end if it existed
+            if ( $logout !== null ) {
+                $items['customer-logout'] = $logout;
+            }
         }
         return $items;
     }
@@ -76,7 +91,15 @@ class Frontend_Service {
      * Enqueue minimal assets.
      */
     public function enqueue_assets(): void {
-        wp_enqueue_style( 'wclr-frontend', WCLR_PLUGIN_URL . 'assets/css/frontend.css', [], '1.0.0' );
+        wp_enqueue_style( 'wclr-frontend', WCLR_PLUGIN_URL . 'assets/css/frontend.css', [], WCLR_VERSION );
+
+        // Enqueue JavaScript for AJAX redemption
+        if ( is_cart() || is_checkout() ) {
+            wp_enqueue_script( 'wclr-frontend', WCLR_PLUGIN_URL . 'assets/js/frontend.js', [ 'jquery' ], WCLR_VERSION, true );
+            wp_localize_script( 'wclr-frontend', 'wclrFrontend', [
+                'ajaxUrl' => admin_url( 'admin-ajax.php' ),
+            ] );
+        }
     }
 
     /**
@@ -86,25 +109,113 @@ class Frontend_Service {
         if ( is_admin() || ! is_user_logged_in() ) {
             return;
         }
+
+        // Don't process if already processed by check_reward_notice_after_earn
+        if ( ! empty( $this->pending_notice ) ) {
+            return;
+        }
+
         $user_id = get_current_user_id();
         $pending = get_user_meta( $user_id, '_wclr_pending_reward_notice', true );
         if ( empty( $pending ) || ! is_array( $pending ) ) {
             return;
         }
+
         $this->pending_notice = $pending;
         delete_user_meta( $user_id, '_wclr_pending_reward_notice' );
 
-        if ( function_exists( 'wc_add_notice' ) ) {
-            $amount  = (int) ( $pending['amount'] ?? 0 );
-            $balance = (int) ( $pending['balance'] ?? 0 );
-            $this->pending_message = sprintf(
-                /* translators: 1: points earned, 2: balance */
-                __( 'You earned %1$d points! New balance: %2$d.', 'wc-loyalty-rewards' ),
-                $amount,
-                $balance
-            );
-            wc_add_notice( $this->pending_message, 'success' );
+        $amount  = (int) ( $pending['amount'] ?? 0 );
+        $balance = (int) ( $pending['balance'] ?? 0 );
+        $this->pending_message = sprintf(
+            /* translators: 1: points earned, 2: balance */
+            __( 'You earned %1$d points! New balance: %2$d.', 'wc-loyalty-rewards' ),
+            $amount,
+            $balance
+        );
+        // Removed wc_add_notice - only show flash notification popup
+    }
+
+    /**
+     * Check for reward notice immediately after earning points.
+     * This ensures daily visit rewards show notifications immediately.
+     *
+     * @param int    $user_id User ID.
+     * @param int    $amount  Points amount.
+     * @param array  $data    Additional data including context.
+     */
+    public function check_reward_notice_after_earn( int $user_id, int $amount, array $data ): void {
+        // Only check if we're on the frontend and user is logged in
+        if ( is_admin() || ! is_user_logged_in() || get_current_user_id() !== $user_id ) {
+            return;
         }
+
+        // Only process if notice hasn't been queued yet
+        if ( ! empty( $this->pending_notice ) ) {
+            return;
+        }
+
+        // Check for pending notice
+        $pending = get_user_meta( $user_id, '_wclr_pending_reward_notice', true );
+        if ( ! empty( $pending ) && is_array( $pending ) ) {
+            // Only process if this is a recent notice (within last 5 seconds) to avoid processing old notices
+            $notice_time = isset( $pending['time'] ) ? (int) $pending['time'] : 0;
+            if ( time() - $notice_time <= 5 ) {
+                $this->pending_notice = $pending;
+                delete_user_meta( $user_id, '_wclr_pending_reward_notice' );
+
+                $balance = isset( $pending['balance'] ) ? (int) $pending['balance'] : 0;
+                $this->pending_message = sprintf(
+                    /* translators: 1: points earned, 2: balance */
+                    __( 'You earned %1$d points! New balance: %2$d.', 'wc-loyalty-rewards' ),
+                    $amount,
+                    $balance
+                );
+                // Removed wc_add_notice - only show flash notification popup
+            }
+        }
+    }
+
+    /**
+     * Check for demo notification request and trigger it.
+     * Accessible via URL parameter: ?wclr_demo_notification=1
+     * Only works for logged-in users.
+     */
+    public function maybe_trigger_demo_notification(): void {
+        // Only on frontend and for logged-in users
+        if ( is_admin() || ! is_user_logged_in() ) {
+            return;
+        }
+
+        // Check for demo parameter
+        if ( ! isset( $_GET['wclr_demo_notification'] ) || '1' !== $_GET['wclr_demo_notification'] ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+            return;
+        }
+
+        $user_id = get_current_user_id();
+        if ( ! $user_id ) {
+            return;
+        }
+
+        // Get current balance for realistic demo
+        $balance = $this->points->get_user_balance( $user_id );
+        $demo_amount = 100; // Demo points amount
+        $demo_balance = $balance->balance + $demo_amount;
+
+        // Set demo notice
+        $this->pending_notice = [
+            'amount'  => $demo_amount,
+            'balance' => $demo_balance,
+            'context' => 'demo_notification',
+            'time'    => time(),
+        ];
+
+        $this->pending_message = sprintf(
+            /* translators: 1: points earned, 2: balance */
+            __( 'You earned %1$d points! New balance: %2$d.', 'wc-loyalty-rewards' ),
+            $demo_amount,
+            $demo_balance
+        );
+        // Removed wc_add_notice - only show flash notification popup
     }
 
     /**
@@ -171,6 +282,7 @@ class Frontend_Service {
         </script>
         <?php
     }
+
 
     /**
      * Output points info inside FunnelKit cart drawer.
@@ -241,33 +353,91 @@ class Frontend_Service {
         $recent = $this->points->get_recent_ledger_entries( $user_id, $per_page, $offset );
         ?>
         <div class="wclr-account">
-            <h2><?php esc_html_e( 'Your Loyalty & Rewards', 'wc-loyalty-rewards' ); ?></h2>
-            <div class="wclr-stats">
-                <p><?php echo esc_html( sprintf( __( 'Balance: %d points', 'wc-loyalty-rewards' ), $balance->balance ) ); ?></p>
-                <p><?php echo esc_html( sprintf( __( 'Lifetime: %d points', 'wc-loyalty-rewards' ), $balance->lifetime_points ) ); ?></p>
-                <p><?php echo esc_html( sprintf( __( 'Tier: %s', 'wc-loyalty-rewards' ), $tier ? $tier->name : __( 'None', 'wc-loyalty-rewards' ) ) ); ?></p>
+            <div class="wclr-account-header">
+                <h2 class="wclr-account-title"><?php esc_html_e( 'Your Loyalty & Rewards', 'wc-loyalty-rewards' ); ?></h2>
             </div>
+
+            <div class="wclr-stats-grid">
+                <div class="wclr-stat-card">
+                    <div class="wclr-stat-icon">💰</div>
+                    <div class="wclr-stat-content">
+                        <div class="wclr-stat-label"><?php esc_html_e( 'Current Balance', 'wc-loyalty-rewards' ); ?></div>
+                        <div class="wclr-stat-value"><?php echo esc_html( number_format_i18n( $balance->balance ) ); ?></div>
+                        <div class="wclr-stat-unit"><?php esc_html_e( 'points', 'wc-loyalty-rewards' ); ?></div>
+                    </div>
+                </div>
+
+                <div class="wclr-stat-card">
+                    <div class="wclr-stat-icon">⭐</div>
+                    <div class="wclr-stat-content">
+                        <div class="wclr-stat-label"><?php esc_html_e( 'Lifetime Points', 'wc-loyalty-rewards' ); ?></div>
+                        <div class="wclr-stat-value"><?php echo esc_html( number_format_i18n( $balance->lifetime_points ) ); ?></div>
+                        <div class="wclr-stat-unit"><?php esc_html_e( 'points', 'wc-loyalty-rewards' ); ?></div>
+                    </div>
+                </div>
+
+                <div class="wclr-stat-card">
+                    <div class="wclr-stat-icon">🏆</div>
+                    <div class="wclr-stat-content">
+                        <div class="wclr-stat-label"><?php esc_html_e( 'Current Tier', 'wc-loyalty-rewards' ); ?></div>
+                        <div class="wclr-stat-value"><?php echo esc_html( $tier ? $tier->name : __( 'None', 'wc-loyalty-rewards' ) ); ?></div>
+                        <?php if ( $tier ) : ?>
+                            <div class="wclr-stat-unit"><?php echo esc_html( sprintf( __( '%sx multiplier', 'wc-loyalty-rewards' ), $tier->multiplier ) ); ?></div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            </div>
+
             <div class="wclr-referrals">
-                <h3><?php esc_html_e( 'Refer a friend', 'wc-loyalty-rewards' ); ?></h3>
-                <p><?php esc_html_e( 'Share your code or link:', 'wc-loyalty-rewards' ); ?></p>
-                <code><?php echo esc_html( $code ); ?></code>
+                <div class="wclr-section-header">
+                    <h3 class="wclr-section-title">
+                        <span class="wclr-section-icon">🎁</span>
+                        <?php esc_html_e( 'Refer a friend', 'wc-loyalty-rewards' ); ?>
+                    </h3>
+                </div>
                 <?php if ( $link ) : ?>
-                    <p><a href="<?php echo esc_url( $link ); ?>"><?php echo esc_html( $link ); ?></a></p>
+                    <div class="wclr-referral-section">
+                        <p class="wclr-referral-label"><?php esc_html_e( 'Share your link:', 'wc-loyalty-rewards' ); ?></p>
+                        <div class="wclr-referral-link-wrapper">
+                            <input type="text" readonly value="<?php echo esc_attr( $link ); ?>" class="wclr-referral-link-input" id="wclr-referral-link-<?php echo esc_attr( $user_id ); ?>" />
+                            <button type="button" class="wclr-copy-link-btn" data-copy-target="wclr-referral-link-<?php echo esc_attr( $user_id ); ?>" aria-label="<?php esc_attr_e( 'Copy link', 'wc-loyalty-rewards' ); ?>">
+                                <span class="wclr-copy-icon">📋</span>
+                                <span class="wclr-copy-text"><?php esc_html_e( 'Copy', 'wc-loyalty-rewards' ); ?></span>
+                            </button>
+                        </div>
+                    </div>
                 <?php endif; ?>
-                <h4><?php esc_html_e( 'Recent referrals', 'wc-loyalty-rewards' ); ?></h4>
-                <ul>
-                    <?php foreach ( $referrals as $ref ) : ?>
-                        <li><?php echo esc_html( sprintf( __( 'Code %s – Status: %s', 'wc-loyalty-rewards' ), $ref->referral_code, $ref->status ) ); ?></li>
-                    <?php endforeach; ?>
-                </ul>
+
+                <?php if ( ! empty( $referrals ) ) : ?>
+                    <div class="wclr-referrals-list-section">
+                        <h4 class="wclr-subsection-title"><?php esc_html_e( 'Recent referrals', 'wc-loyalty-rewards' ); ?></h4>
+                        <ul class="wclr-referrals-list">
+                            <?php foreach ( $referrals as $ref ) : ?>
+                                <li class="wclr-referral-item">
+                                    <span class="wclr-referral-code"><?php echo esc_html( $ref->referral_code ); ?></span>
+                                    <span class="wclr-referral-status wclr-status-<?php echo esc_attr( strtolower( $ref->status ) ); ?>"><?php echo esc_html( $ref->status ); ?></span>
+                                </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    </div>
+                <?php endif; ?>
             </div>
 
             <div class="wclr-recent-ledger">
-                <h3><?php esc_html_e( 'Recent Points Activity', 'wc-loyalty-rewards' ); ?></h3>
+                <div class="wclr-section-header">
+                    <h3 class="wclr-section-title">
+                        <span class="wclr-section-icon">📊</span>
+                        <?php esc_html_e( 'Recent Points Activity', 'wc-loyalty-rewards' ); ?>
+                    </h3>
+                </div>
                 <?php if ( empty( $recent ) ) : ?>
-                    <p><?php esc_html_e( 'No recent activity.', 'wc-loyalty-rewards' ); ?></p>
+                    <div class="wclr-empty-state">
+                        <div class="wclr-empty-icon">📝</div>
+                        <p class="wclr-empty-text"><?php esc_html_e( 'No recent activity.', 'wc-loyalty-rewards' ); ?></p>
+                    </div>
                 <?php else : ?>
-                    <table class="widefat striped wclr-ledger-table">
+                    <div class="wclr-table-wrapper">
+                        <table class="wclr-ledger-table">
                         <thead>
                             <tr>
                                 <th><?php esc_html_e( 'Date', 'wc-loyalty-rewards' ); ?></th>
@@ -282,13 +452,14 @@ class Frontend_Service {
                                 <tr>
                                     <td><?php echo esc_html( date_i18n( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), strtotime( $entry->created_at ) ) ); ?></td>
                                     <td><?php echo esc_html( ucfirst( $entry->type ) ); ?></td>
-                                    <td><?php echo esc_html( $entry->amount ); ?></td>
+                                    <td class="<?php echo esc_attr( ( 'spend' === $entry->type || (int) $entry->amount < 0 ) ? 'wclr-amount-negative' : 'wclr-amount-positive' ); ?>"><?php echo esc_html( $entry->amount ); ?></td>
                                     <td><?php echo esc_html( $entry->balance_after ); ?></td>
                                     <td><?php echo esc_html( $this->format_context( $entry->context ) ); ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         </tbody>
                     </table>
+                    </div>
 
                     <?php if ( $total_pages > 1 ) : ?>
                         <div class="wclr-pagination">
@@ -359,6 +530,71 @@ class Frontend_Service {
                 <?php endif; ?>
             </div>
         </div>
+        <script>
+        (function() {
+            if (window.wclrCopyInitialized) return;
+            window.wclrCopyInitialized = true;
+
+            // Copy link functionality
+            function initCopyButtons() {
+                var copyButtons = document.querySelectorAll('.wclr-copy-link-btn');
+                copyButtons.forEach(function(button) {
+                    if (button.dataset.copyInitialized) return;
+                    button.dataset.copyInitialized = 'true';
+
+                    button.addEventListener('click', function() {
+                        var targetId = this.getAttribute('data-copy-target');
+                        var input = document.getElementById(targetId);
+                        if (!input) return;
+
+                        // Select and copy
+                        input.select();
+                        input.setSelectionRange(0, 99999); // For mobile devices
+
+                        try {
+                            document.execCommand('copy');
+
+                            // Fallback for modern browsers
+                            if (navigator.clipboard && navigator.clipboard.writeText) {
+                                navigator.clipboard.writeText(input.value).then(function() {
+                                    showCopySuccess(button);
+                                }).catch(function() {
+                                    showCopySuccess(button); // Still show success even if clipboard API fails
+                                });
+                            } else {
+                                showCopySuccess(button);
+                            }
+                        } catch (err) {
+                            // If execCommand fails, try clipboard API
+                            if (navigator.clipboard && navigator.clipboard.writeText) {
+                                navigator.clipboard.writeText(input.value).then(function() {
+                                    showCopySuccess(button);
+                                });
+                            }
+                        }
+                    });
+                });
+            }
+
+            function showCopySuccess(button) {
+                button.classList.add('copied');
+                var originalText = button.querySelector('.wclr-copy-text').textContent;
+                button.querySelector('.wclr-copy-text').textContent = '<?php echo esc_js( __( 'Copied!', 'wc-loyalty-rewards' ) ); ?>';
+
+                setTimeout(function() {
+                    button.classList.remove('copied');
+                    button.querySelector('.wclr-copy-text').textContent = originalText;
+                }, 2000);
+            }
+
+            // Initialize on page load
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', initCopyButtons);
+            } else {
+                initCopyButtons();
+            }
+        })();
+        </script>
         <?php
     }
 
@@ -416,11 +652,82 @@ class Frontend_Service {
         ob_start();
         ?>
         <div class="wclr-shortcode wclr-referral-block">
-            <p><strong><?php esc_html_e( 'Your referral code', 'wc-loyalty-rewards' ); ?>:</strong> <code><?php echo esc_html( $code ); ?></code></p>
             <?php if ( $link ) : ?>
-                <p><a href="<?php echo esc_url( $link ); ?>"><?php echo esc_html( $link ); ?></a></p>
+                <p><strong><?php esc_html_e( 'Share your link:', 'wc-loyalty-rewards' ); ?></strong></p>
+                <div class="wclr-referral-link-wrapper">
+                    <input type="text" readonly value="<?php echo esc_attr( $link ); ?>" class="wclr-referral-link-input" id="wclr-referral-link-shortcode-<?php echo esc_attr( $user_id ); ?>" />
+                    <button type="button" class="wclr-copy-link-btn" data-copy-target="wclr-referral-link-shortcode-<?php echo esc_attr( $user_id ); ?>" aria-label="<?php esc_attr_e( 'Copy link', 'wc-loyalty-rewards' ); ?>">
+                        <span class="wclr-copy-icon">📋</span>
+                        <span class="wclr-copy-text"><?php esc_html_e( 'Copy', 'wc-loyalty-rewards' ); ?></span>
+                    </button>
+                </div>
             <?php endif; ?>
         </div>
+        <script>
+        (function() {
+            if (window.wclrCopyInitialized) return;
+            window.wclrCopyInitialized = true;
+
+            // Copy link functionality
+            function initCopyButtons() {
+                var copyButtons = document.querySelectorAll('.wclr-copy-link-btn');
+                copyButtons.forEach(function(button) {
+                    if (button.dataset.copyInitialized) return;
+                    button.dataset.copyInitialized = 'true';
+
+                    button.addEventListener('click', function() {
+                        var targetId = this.getAttribute('data-copy-target');
+                        var input = document.getElementById(targetId);
+                        if (!input) return;
+
+                        // Select and copy
+                        input.select();
+                        input.setSelectionRange(0, 99999); // For mobile devices
+
+                        try {
+                            document.execCommand('copy');
+
+                            // Fallback for modern browsers
+                            if (navigator.clipboard && navigator.clipboard.writeText) {
+                                navigator.clipboard.writeText(input.value).then(function() {
+                                    showCopySuccess(button);
+                                }).catch(function() {
+                                    showCopySuccess(button); // Still show success even if clipboard API fails
+                                });
+                            } else {
+                                showCopySuccess(button);
+                            }
+                        } catch (err) {
+                            // If execCommand fails, try clipboard API
+                            if (navigator.clipboard && navigator.clipboard.writeText) {
+                                navigator.clipboard.writeText(input.value).then(function() {
+                                    showCopySuccess(button);
+                                });
+                            }
+                        }
+                    });
+                });
+            }
+
+            function showCopySuccess(button) {
+                button.classList.add('copied');
+                var originalText = button.querySelector('.wclr-copy-text').textContent;
+                button.querySelector('.wclr-copy-text').textContent = '<?php echo esc_js( __( 'Copied!', 'wc-loyalty-rewards' ) ); ?>';
+
+                setTimeout(function() {
+                    button.classList.remove('copied');
+                    button.querySelector('.wclr-copy-text').textContent = originalText;
+                }, 2000);
+            }
+
+            // Initialize on page load
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', initCopyButtons);
+            } else {
+                initCopyButtons();
+            }
+        })();
+        </script>
         <?php
         return ob_get_clean();
     }
@@ -467,7 +774,7 @@ class Frontend_Service {
                     <tr>
                         <td><?php echo esc_html( date_i18n( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), strtotime( $entry->created_at ) ) ); ?></td>
                         <td><?php echo esc_html( ucfirst( $entry->type ) ); ?></td>
-                        <td><?php echo esc_html( $entry->amount ); ?></td>
+                        <td class="<?php echo esc_attr( ( 'spend' === $entry->type || (int) $entry->amount < 0 ) ? 'wclr-amount-negative' : 'wclr-amount-positive' ); ?>"><?php echo esc_html( $entry->amount ); ?></td>
                         <td><?php echo esc_html( $entry->balance_after ); ?></td>
                         <td><?php echo esc_html( $this->format_context( $entry->context ) ); ?></td>
                     </tr>

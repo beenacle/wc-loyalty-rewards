@@ -113,7 +113,7 @@ class Admin_Service {
         }
 
         // Enqueue admin CSS.
-        wp_enqueue_style( 'wclr-admin', WCLR_PLUGIN_URL . 'assets/css/admin.css', [], '1.0.0' );
+        wp_enqueue_style( 'wclr-admin', WCLR_PLUGIN_URL . 'assets/css/admin.css', [], WCLR_VERSION );
 
         // WooCommerce enhanced select (Select2).
         if ( function_exists( 'WC' ) ) {
@@ -209,8 +209,8 @@ class Admin_Service {
         $oe                       = $input['order_earning'];
         $exclude_coupons_oe       = isset( $oe['exclude_coupons'] ) && is_array( $oe['exclude_coupons'] ) ? $oe['exclude_coupons'] : [];
         $order_statuses_raw       = isset( $oe['order_statuses'] ) && is_array( $oe['order_statuses'] ) ? $oe['order_statuses'] : [ 'wc-completed' ];
-        // Get valid WooCommerce order statuses
-        $valid_statuses           = function_exists( 'wc_get_order_statuses' ) ? array_keys( wc_get_order_statuses() ) : [ 'pending', 'processing', 'on-hold', 'completed', 'cancelled', 'refunded', 'failed' ];
+        // Get valid WooCommerce order statuses (wc_get_order_statuses returns keys with 'wc-' prefix)
+        $valid_statuses           = function_exists( 'wc_get_order_statuses' ) ? array_keys( wc_get_order_statuses() ) : [ 'wc-pending', 'wc-processing', 'wc-on-hold', 'wc-completed', 'wc-cancelled', 'wc-refunded', 'wc-failed' ];
         // Sanitize and filter order statuses to only include valid ones
         $order_statuses_sanitized = array_intersect( array_map( 'sanitize_text_field', $order_statuses_raw ), $valid_statuses );
         // Ensure at least one status is selected (default to wc-completed if empty)
@@ -707,6 +707,31 @@ class Admin_Service {
                             <td><label><input type="checkbox" name="wclr_settings[display][show_checkout]" value="1" <?php checked( ! empty( $settings['display']['show_checkout'] ) ); ?> /> <?php esc_html_e( 'Show points and redeem UI on checkout', 'wc-loyalty-rewards' ); ?></label></td>
                         </tr>
                     </table>
+
+                    <div class="postbox" style="margin-top: 20px;">
+                        <div class="postbox-header"><h2 class="hndle"><span><?php esc_html_e( 'Test Notification', 'wc-loyalty-rewards' ); ?></span></h2></div>
+                        <div class="inside">
+                            <p><?php esc_html_e( 'Test the reward notification system by triggering a demo notification. This will show how notifications appear when users earn points.', 'wc-loyalty-rewards' ); ?></p>
+                            <p>
+                                <?php
+                                $demo_url = add_query_arg(
+                                    'wclr_demo_notification',
+                                    '1',
+                                    home_url()
+                                );
+                                ?>
+                                <a href="<?php echo esc_url( $demo_url ); ?>" target="_blank" class="button button-secondary">
+                                    <?php esc_html_e( 'Launch Demo Notification', 'wc-loyalty-rewards' ); ?>
+                                </a>
+                                <span class="description" style="margin-left: 10px;">
+                                    <?php esc_html_e( 'Opens in a new tab. Make sure you are logged in as a customer account.', 'wc-loyalty-rewards' ); ?>
+                                </span>
+                            </p>
+                            <p class="description">
+                                <?php esc_html_e( 'You can also add <code>?wclr_demo_notification=1</code> to any frontend URL to test the notification.', 'wc-loyalty-rewards' ); ?>
+                            </p>
+                        </div>
+                    </div>
                 </div>
 
                 <div id="wclr-panel-utilities" class="wclr-panel hidden">
