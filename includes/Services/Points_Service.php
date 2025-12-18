@@ -292,16 +292,39 @@ class Points_Service {
             return 0;
         }
 
+        // Get user's signup date to exclude it from daily visit counting (prevents double rewards on signup day).
+        $user_data = get_userdata( $user_id );
+        $signup_date = null;
+        if ( $user_data && ! empty( $user_data->user_registered ) ) {
+            $registered_dt = \DateTime::createFromFormat( 'Y-m-d H:i:s', $user_data->user_registered, new \DateTimeZone( 'UTC' ) );
+            if ( $registered_dt ) {
+                $signup_date = $registered_dt->format( 'Y-m-d' );
+            }
+        }
+
         // Get visited days for this user.
         $visited_days = get_user_meta( $user_id, '_wclr_daily_visits', true );
         if ( ! is_array( $visited_days ) ) {
             $visited_days = [];
         }
 
-        // Track today's visit (only once per day).
-        if ( ! isset( $visited_days[ $today ] ) ) {
-            $visited_days[ $today ] = 1;
+        // Remove signup day from visited_days if it exists (legacy data from before this fix).
+        // This prevents signup day from counting towards daily visit threshold.
+        $removed_signup_date = false;
+        if ( $signup_date && isset( $visited_days[ $signup_date ] ) ) {
+            unset( $visited_days[ $signup_date ] );
+            $removed_signup_date = true;
+        }
 
+        // Track today's visit (only once per day), but exclude signup day from counting.
+        $should_update_meta = $removed_signup_date;
+        if ( ! isset( $visited_days[ $today ] ) && $signup_date !== $today ) {
+            $visited_days[ $today ] = 1;
+            $should_update_meta = true;
+        }
+
+        // Update meta if we made changes, and clean up old dates while we're at it.
+        if ( $should_update_meta ) {
             // Clean up old dates (keep only last 30 days for efficiency).
             $thirty_days_ago = gmdate( 'Y-m-d', strtotime( '-30 days' ) );
             foreach ( $visited_days as $date => $value ) {
@@ -313,8 +336,13 @@ class Points_Service {
             update_user_meta( $user_id, '_wclr_daily_visits', $visited_days );
         }
 
-        // Count unique days visited.
-        $days_visited = count( $visited_days );
+        // Count unique days visited, excluding the signup day.
+        $days_visited = 0;
+        foreach ( $visited_days as $date => $value ) {
+            if ( $date !== $signup_date ) {
+                $days_visited++;
+            }
+        }
 
         // Check if threshold is reached.
         if ( $days_visited >= $threshold ) {
@@ -398,22 +426,37 @@ class Points_Service {
         if ( $points <= 0 ) {
             return 0;
         }
+
+        // Allow filtering of anniversary bonus points.
+        $points = (int) apply_filters( 'wc_loyalty_rewards_anniversary_bonus', $points, $user_id );
+        if ( $points <= 0 ) {
+            return 0;
+        }
+
         $year = (int) gmdate( 'Y' );
         $key  = '_wclr_anniversary_year';
         $last = (int) get_user_meta( $user_id, $key, true );
         if ( $last === $year ) {
             return 0;
         }
-        $this->add_points(
-            $user_id,
-            $points,
-            'earn',
-            [
-                'context' => 'anniversary',
-            ]
-        );
-        update_user_meta( $user_id, $key, $year );
-        return $points;
+
+        try {
+            $this->add_points(
+                $user_id,
+                $points,
+                'earn',
+                [
+                    'context' => 'anniversary',
+                ]
+            );
+            // Only update meta if points were successfully added.
+            update_user_meta( $user_id, $key, $year );
+            return $points;
+        } catch ( \Exception $e ) {
+            // If add_points fails, don't update meta so user can retry.
+            // Re-throw to allow caller to handle if needed.
+            throw $e;
+        }
     }
 
     /**

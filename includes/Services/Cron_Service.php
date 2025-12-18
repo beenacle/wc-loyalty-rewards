@@ -61,16 +61,49 @@ class Cron_Service {
 
             foreach ( $users as $user ) {
                 if ( $anniversary_enabled ) {
-                    $registered = strtotime( $user->user_registered );
-                    if ( $registered && gmdate( 'm', $registered ) === $today_month && gmdate( 'd', $registered ) === $today_day ) {
-                        $this->points->earn_for_anniversary( $user->ID );
+                    try {
+                        // Parse user_registered date explicitly as UTC to avoid timezone issues.
+                        // WordPress stores dates in UTC format 'Y-m-d H:i:s'.
+                        $registered_dt = \DateTime::createFromFormat( 'Y-m-d H:i:s', $user->user_registered, new \DateTimeZone( 'UTC' ) );
+                        if ( $registered_dt ) {
+                            $reg_month = $registered_dt->format( 'm' );
+                            $reg_day   = $registered_dt->format( 'd' );
+
+                            // Check for exact match.
+                            $is_match = ( $reg_month === $today_month && $reg_day === $today_day );
+
+                            // Handle leap year: if user registered on Feb 29, also match on Feb 28 in non-leap years.
+                            if ( ! $is_match && '02' === $reg_month && '29' === $reg_day && '02' === $today_month && '28' === $today_day ) {
+                                // Check if current year is a non-leap year.
+                                $current_year = (int) gmdate( 'Y' );
+                                if ( ! ( ( 0 === $current_year % 4 && 0 !== $current_year % 100 ) || 0 === $current_year % 400 ) ) {
+                                    $is_match = true;
+                                }
+                            }
+
+                            if ( $is_match ) {
+                                $this->points->earn_for_anniversary( $user->ID );
+                            }
+                        }
+                    } catch ( \Exception $e ) {
+                        // Log error but continue processing other users.
+                        if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+                            error_log( 'WCLR: Anniversary reward error for user ' . $user->ID . ': ' . $e->getMessage() ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+                        }
                     }
                 }
 
                 if ( $birthday_enabled ) {
-                    $birthday_value = get_user_meta( $user->ID, $birthday_meta_key, true );
-                    if ( ! empty( $birthday_value ) ) {
-                        $this->points->earn_for_birthday( $user->ID, (string) $birthday_value, $birthday_meta_key, $birthday_format );
+                    try {
+                        $birthday_value = get_user_meta( $user->ID, $birthday_meta_key, true );
+                        if ( ! empty( $birthday_value ) ) {
+                            $this->points->earn_for_birthday( $user->ID, (string) $birthday_value, $birthday_meta_key, $birthday_format );
+                        }
+                    } catch ( \Exception $e ) {
+                        // Log error but continue processing other users.
+                        if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+                            error_log( 'WCLR: Birthday reward error for user ' . $user->ID . ': ' . $e->getMessage() ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+                        }
                     }
                 }
             }
