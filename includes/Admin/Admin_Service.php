@@ -184,6 +184,7 @@ class Admin_Service {
                 'show_my_account' => true,
                 'show_cart'       => true,
                 'show_checkout'   => true,
+                'custom_css'      => '',
             ],
         ];
     }
@@ -304,6 +305,7 @@ class Admin_Service {
             'show_my_account' => ! empty( $display['show_my_account'] ),
             'show_cart'       => ! empty( $display['show_cart'] ),
             'show_checkout'   => ! empty( $display['show_checkout'] ),
+            'custom_css'      => isset( $display['custom_css'] ) ? wp_strip_all_tags( $display['custom_css'] ) : '',
         ];
 
         // Clear settings cache after save.
@@ -705,6 +707,13 @@ class Admin_Service {
                         <tr>
                             <th scope="row"><?php esc_html_e( 'Checkout widget', 'wc-loyalty-rewards' ); ?></th>
                             <td><label><input type="checkbox" name="wclr_settings[display][show_checkout]" value="1" <?php checked( ! empty( $settings['display']['show_checkout'] ) ); ?> /> <?php esc_html_e( 'Show points and redeem UI on checkout', 'wc-loyalty-rewards' ); ?></label></td>
+                        </tr>
+                        <tr>
+                            <th scope="row"><?php esc_html_e( 'Custom CSS', 'wc-loyalty-rewards' ); ?></th>
+                            <td>
+                                <textarea name="wclr_settings[display][custom_css]" rows="10" cols="50" class="large-text code"><?php echo esc_textarea( $settings['display']['custom_css'] ?? '' ); ?></textarea>
+                                <p class="description"><?php esc_html_e( 'Add custom CSS to style loyalty & rewards elements. This CSS will be loaded on the frontend.', 'wc-loyalty-rewards' ); ?></p>
+                            </td>
                         </tr>
                     </table>
 

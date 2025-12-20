@@ -31,6 +31,7 @@ class Frontend_Service {
         add_filter( 'woocommerce_account_menu_items', [ $this, 'add_account_menu_item' ] );
         add_action( 'woocommerce_account_wclr-loyalty_endpoint', [ $this, 'render_account_page' ] );
         add_action( 'wp_enqueue_scripts', [ $this, 'enqueue_assets' ] );
+        add_action( 'wp_head', [ $this, 'output_custom_css' ], 100 );
         add_action( 'wp', [ $this, 'maybe_queue_reward_notice' ], 20 );
         add_action( 'wp', [ $this, 'maybe_trigger_demo_notification' ], 25 );
         add_action( 'wp_footer', [ $this, 'render_reward_notice_and_confetti' ] );
@@ -99,6 +100,20 @@ class Frontend_Service {
             wp_localize_script( 'wclr-frontend', 'wclrFrontend', [
                 'ajaxUrl' => admin_url( 'admin-ajax.php' ),
             ] );
+        }
+    }
+
+    /**
+     * Output custom CSS from settings.
+     */
+    public function output_custom_css(): void {
+        $settings = Settings_Cache::get();
+        $custom_css = isset( $settings['display']['custom_css'] ) ? trim( $settings['display']['custom_css'] ) : '';
+
+        if ( ! empty( $custom_css ) ) {
+            echo '<style id="wclr-custom-css">' . "\n";
+            echo wp_strip_all_tags( $custom_css ) . "\n";
+            echo '</style>' . "\n";
         }
     }
 
