@@ -69,7 +69,7 @@ class Cron_Service {
                             $reg_month = $registered_dt->format( 'm' );
                             $reg_day   = $registered_dt->format( 'd' );
 
-                            // Check for exact match.
+                            // Check for exact month/day match.
                             $is_match = ( $reg_month === $today_month && $reg_day === $today_day );
 
                             // Handle leap year: if user registered on Feb 29, also match on Feb 28 in non-leap years.
@@ -81,8 +81,20 @@ class Cron_Service {
                                 }
                             }
 
+                            // Only award if month/day matches AND at least one year has passed since registration.
                             if ( $is_match ) {
-                                $this->points->earn_for_anniversary( $user->ID );
+                                // Get today's date at start of day for comparison.
+                                $today_dt = new \DateTime( 'today', new \DateTimeZone( 'UTC' ) );
+
+                                // Calculate one year after registration date (at start of registration day).
+                                $one_year_after_reg = clone $registered_dt;
+                                $one_year_after_reg->setTime( 0, 0, 0 ); // Set to start of registration day.
+                                $one_year_after_reg->modify( '+1 year' );
+
+                                // Only award if at least one full year has passed (comparing dates, not times).
+                                if ( $today_dt >= $one_year_after_reg ) {
+                                    $this->points->earn_for_anniversary( $user->ID );
+                                }
                             }
                         }
                     } catch ( \Exception $e ) {

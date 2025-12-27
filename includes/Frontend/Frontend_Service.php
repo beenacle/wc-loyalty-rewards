@@ -321,14 +321,14 @@ class Frontend_Service {
             <div class="fkcart-order-summary-container">
                 <?php if ( null !== $balance ) : ?>
                     <div class="fkcart-summary-line-item">
-                        <div class="fkcart-summary-text"><strong><?php esc_html_e( 'Your points', 'wc-loyalty-rewards' ); ?></strong></div>
+                        <div class="fkcart-summary-text"><strong><span class="wclr-icon">💰</span> Your points</strong></div>
                         <div class="fkcart-summary-amount"><strong><?php echo esc_html( number_format_i18n( $balance ) ); ?></strong></div>
                     </div>
                 <?php endif; ?>
 
                 <?php if ( $earnable > 0 ) : ?>
                     <div class="fkcart-summary-line-item">
-                        <div class="fkcart-summary-text"><?php esc_html_e( 'Earn on this order', 'wc-loyalty-rewards' ); ?></div>
+                        <div class="fkcart-summary-text"><span class="wclr-icon">🎁</span> <?php esc_html_e( 'Earn on this order', 'wc-loyalty-rewards' ); ?></div>
                         <div class="fkcart-summary-amount"><?php echo esc_html( number_format_i18n( $earnable ) ); ?></div>
                     </div>
                 <?php endif; ?>

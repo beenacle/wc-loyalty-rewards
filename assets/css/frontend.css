@@ -959,6 +959,10 @@
    Legacy Form Styles (for backward compatibility)
    ============================================ */
 
+.wclr-redeem-block {
+    margin-bottom: 20px;
+}
+
 .wclr-redeem-block form {
     margin-top: 10px;
 }
