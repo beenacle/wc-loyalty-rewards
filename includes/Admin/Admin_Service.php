@@ -224,6 +224,7 @@ class Admin_Service {
             'include_shipping'       => ! empty( $oe['include_shipping'] ),
             'min_order'              => isset( $oe['min_order'] ) ? max( 0, (float) $oe['min_order'] ) : 0,
             'refund_behavior'        => in_array( $oe['refund_behavior'] ?? 'reverse', [ 'reverse', 'prorate', 'ignore' ], true ) ? $oe['refund_behavior'] : 'reverse',
+            'exclude_all_coupons'    => ! empty( $oe['exclude_all_coupons'] ),
             'exclude_coupons_enabled'=> ! empty( $oe['exclude_coupons_enabled'] ),
             'exclude_coupons'        => array_map( 'sanitize_text_field', $exclude_coupons_oe ),
             'order_statuses'         => array_values( $order_statuses_sanitized ), // Re-index array
@@ -296,6 +297,7 @@ class Admin_Service {
             'auto_percent'           => isset( $redemption['auto_percent'] ) ? max( 0, min( 100, (int) $redemption['auto_percent'] ) ) : 0,
             'return_on_refund'       => ! empty( $redemption['return_on_refund'] ),
             'allow_manual_input'     => ! empty( $redemption['allow_manual_input'] ),
+            'exclude_all_coupons'    => ! empty( $redemption['exclude_all_coupons'] ),
             'exclude_coupons_enabled'=> ! empty( $redemption['exclude_coupons_enabled'] ),
             'exclude_coupons'        => array_map( 'sanitize_text_field', $exclude_coupons_red ),
         ];
@@ -427,7 +429,17 @@ class Admin_Service {
                                     </td>
                                 </tr>
                                 <tr>
-                                    <th scope="row"><?php esc_html_e( 'Exclude coupons', 'wc-loyalty-rewards' ); ?></th>
+                                    <th scope="row"><?php esc_html_e( 'Exclude all coupons', 'wc-loyalty-rewards' ); ?></th>
+                                    <td>
+                                        <label>
+                                            <input type="checkbox" name="wclr_settings[order_earning][exclude_all_coupons]" value="1" <?php checked( ! empty( $settings['order_earning']['exclude_all_coupons'] ) ); ?> class="wclr-exclude-all-coupons-toggle-oe" />
+                                            <?php esc_html_e( 'Disable point earning when any coupon is applied', 'wc-loyalty-rewards' ); ?>
+                                        </label>
+                                        <p class="description"><?php esc_html_e( 'When enabled, points will not be earned whenever any coupon code is applied to the order.', 'wc-loyalty-rewards' ); ?></p>
+                                    </td>
+                                </tr>
+                                <tr id="wclr-exclude-specific-coupons-row-oe" style="<?php echo ! empty( $settings['order_earning']['exclude_all_coupons'] ) ? 'display: none;' : ''; ?>">
+                                    <th scope="row"><?php esc_html_e( 'Exclude specific coupons', 'wc-loyalty-rewards' ); ?></th>
                                     <td>
                                         <?php
                                         $exclude_coupons_enabled_oe = ! empty( $settings['order_earning']['exclude_coupons_enabled'] );
@@ -449,7 +461,7 @@ class Admin_Service {
                                                     <option value="<?php echo esc_attr( $code ); ?>" <?php selected( in_array( $code, $excluded_coupons_oe, true ) ); ?>><?php echo esc_html( $name ); ?></option>
                                                 <?php endforeach; ?>
                                             </select>
-                                            <p class="description"><?php esc_html_e( 'Select coupons that should prevent points from being earned.', 'wc-loyalty-rewards' ); ?></p>
+                                            <p class="description"><?php esc_html_e( 'Select specific coupons that should prevent points from being earned. This works independently of the "Exclude all coupons" option above.', 'wc-loyalty-rewards' ); ?></p>
                                         </div>
                                     </td>
                                 </tr>
@@ -664,7 +676,17 @@ class Admin_Service {
                             <td><label><input type="checkbox" name="wclr_settings[redemption][allow_manual_input]" value="1" <?php checked( ! empty( $settings['redemption']['allow_manual_input'] ) ); ?> /> <?php esc_html_e( 'Show points input and button to customers', 'wc-loyalty-rewards' ); ?></label></td>
                         </tr>
                         <tr>
-                            <th scope="row"><?php esc_html_e( 'Exclude coupons', 'wc-loyalty-rewards' ); ?></th>
+                            <th scope="row"><?php esc_html_e( 'Exclude all coupons', 'wc-loyalty-rewards' ); ?></th>
+                            <td>
+                                <label>
+                                    <input type="checkbox" name="wclr_settings[redemption][exclude_all_coupons]" value="1" <?php checked( ! empty( $settings['redemption']['exclude_all_coupons'] ) ); ?> class="wclr-exclude-all-coupons-toggle" />
+                                    <?php esc_html_e( 'Disable point redemption when any coupon is applied', 'wc-loyalty-rewards' ); ?>
+                                </label>
+                                <p class="description"><?php esc_html_e( 'When enabled, point redemption will be disabled whenever any coupon code is applied to the cart.', 'wc-loyalty-rewards' ); ?></p>
+                            </td>
+                        </tr>
+                        <tr id="wclr-exclude-specific-coupons-row" style="<?php echo ! empty( $settings['redemption']['exclude_all_coupons'] ) ? 'display: none;' : ''; ?>">
+                            <th scope="row"><?php esc_html_e( 'Exclude specific coupons', 'wc-loyalty-rewards' ); ?></th>
                             <td>
                                     <?php
                                     $exclude_coupons_enabled_red = ! empty( $settings['redemption']['exclude_coupons_enabled'] );
@@ -686,7 +708,7 @@ class Admin_Service {
                                                 <option value="<?php echo esc_attr( $code ); ?>" <?php selected( in_array( $code, $excluded_coupons_red, true ) ); ?>><?php echo esc_html( $name ); ?></option>
                                             <?php endforeach; ?>
                                         </select>
-                                        <p class="description"><?php esc_html_e( 'Select coupons that should prevent point redemption.', 'wc-loyalty-rewards' ); ?></p>
+                                        <p class="description"><?php esc_html_e( 'Select specific coupons that should prevent point redemption. This works independently of the "Exclude all coupons" option above.', 'wc-loyalty-rewards' ); ?></p>
                                     </div>
                             </td>
                         </tr>
@@ -832,6 +854,46 @@ class Admin_Service {
                             });
                         }
                     });
+
+                    // Hide/show specific coupons row when "exclude all coupons" is toggled (redemption)
+                    const excludeAllToggle = document.querySelector('.wclr-exclude-all-coupons-toggle');
+                    const specificCouponsRow = document.getElementById('wclr-exclude-specific-coupons-row');
+                    if (excludeAllToggle && specificCouponsRow) {
+                        excludeAllToggle.addEventListener('change', function() {
+                            specificCouponsRow.style.display = this.checked ? 'none' : '';
+                            // Also uncheck and hide the specific coupons selector if excluding all
+                            if (this.checked) {
+                                const specificToggle = document.querySelector('.wclr-exclude-coupons-toggle[data-target="wclr-exclude-coupons-red"]');
+                                const specificDiv = document.getElementById('wclr-exclude-coupons-red');
+                                if (specificToggle) {
+                                    specificToggle.checked = false;
+                                }
+                                if (specificDiv) {
+                                    specificDiv.style.display = 'none';
+                                }
+                            }
+                        });
+                    }
+
+                    // Hide/show specific coupons row when "exclude all coupons" is toggled (order earning)
+                    const excludeAllToggleOe = document.querySelector('.wclr-exclude-all-coupons-toggle-oe');
+                    const specificCouponsRowOe = document.getElementById('wclr-exclude-specific-coupons-row-oe');
+                    if (excludeAllToggleOe && specificCouponsRowOe) {
+                        excludeAllToggleOe.addEventListener('change', function() {
+                            specificCouponsRowOe.style.display = this.checked ? 'none' : '';
+                            // Also uncheck and hide the specific coupons selector if excluding all
+                            if (this.checked) {
+                                const specificToggle = document.querySelector('.wclr-exclude-coupons-toggle[data-target="wclr-exclude-coupons-oe"]');
+                                const specificDiv = document.getElementById('wclr-exclude-coupons-oe');
+                                if (specificToggle) {
+                                    specificToggle.checked = false;
+                                }
+                                if (specificDiv) {
+                                    specificDiv.style.display = 'none';
+                                }
+                            }
+                        });
+                    }
 
                     // Search functionality for coupon selects
                     document.querySelectorAll('.wclr-coupon-search').forEach(function(searchInput) {

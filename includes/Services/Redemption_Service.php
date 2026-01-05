@@ -32,6 +32,11 @@ class Redemption_Service {
         add_shortcode( 'wclr_redeem_widget', [ $this, 'shortcode_redeem_widget' ] );
         add_action( 'wp_ajax_wclr_redeem_points', [ $this, 'handle_ajax_redeem' ] );
         add_action( 'wp_ajax_nopriv_wclr_redeem_points', [ $this, 'handle_ajax_redeem' ] );
+        add_action( 'wp_ajax_wclr_remove_all_coupons', [ $this, 'handle_ajax_remove_all_coupons' ] );
+        add_action( 'wp_ajax_nopriv_wclr_remove_all_coupons', [ $this, 'handle_ajax_remove_all_coupons' ] );
+        // Clear points when coupons are applied/removed to handle exclusions immediately
+        add_action( 'woocommerce_applied_coupon', [ $this, 'check_and_clear_excluded_coupons' ] );
+        add_action( 'woocommerce_removed_coupon', [ $this, 'check_and_clear_excluded_coupons' ] );
     }
 
     /**
@@ -53,6 +58,46 @@ class Redemption_Service {
         if ( empty( $config['allow_manual_input'] ) ) {
             return;
         }
+
+        // Check if excluded coupon is present
+        $has_excluded_coupon = false;
+
+        // Check if "exclude all coupons" is enabled
+        if ( ! empty( $config['exclude_all_coupons'] ) && WC()->cart ) {
+            $applied_coupons = WC()->cart->get_applied_coupons();
+            if ( ! empty( $applied_coupons ) && is_array( $applied_coupons ) && count( $applied_coupons ) > 0 ) {
+                $has_excluded_coupon = true;
+            }
+        }
+
+        // If not excluding all, check for specific excluded coupons
+        if ( ! $has_excluded_coupon && ! empty( $config['exclude_coupons_enabled'] ) && WC()->cart ) {
+            $excluded_coupons = $config['exclude_coupons'] ?? [];
+            if ( ! empty( $excluded_coupons ) && is_array( $excluded_coupons ) ) {
+                $applied_coupons = WC()->cart->get_applied_coupons();
+                // Normalize coupon codes to lowercase for case-insensitive comparison
+                $excluded_coupons_normalized = array_map( 'strtolower', $excluded_coupons );
+                foreach ( $applied_coupons as $applied_code ) {
+                    $applied_code_normalized = strtolower( $applied_code );
+                    if ( in_array( $applied_code_normalized, $excluded_coupons_normalized, true ) ) {
+                        $has_excluded_coupon = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Prevent redemption if excluded coupon is present
+        if ( $has_excluded_coupon ) {
+            WC()->session->__unset( 'wclr_points_to_redeem' );
+            WC()->session->__unset( 'wclr_manual_override' );
+            $message = ! empty( $config['exclude_all_coupons'] )
+                ? __( 'Point redemption is disabled when coupons are applied.', 'wc-loyalty-rewards' )
+                : __( 'Point redemption is disabled when excluded coupons are applied.', 'wc-loyalty-rewards' );
+            wc_add_notice( esc_html( $message ), 'error' );
+            return;
+        }
+
         $points = isset( $_POST['wclr_points_to_redeem'] ) ? (int) wp_unslash( $_POST['wclr_points_to_redeem'] ) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Missing, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
 
         // If points are manually entered, set manual override
@@ -79,6 +124,45 @@ class Redemption_Service {
         if ( empty( $config['allow_manual_input'] ) ) {
             wp_send_json_error( [ 'message' => __( 'Manual input is disabled.', 'wc-loyalty-rewards' ) ] );
             return; // Explicit return after wp_send_json_error() for clarity
+        }
+
+        // Check if excluded coupon is present
+        $has_excluded_coupon = false;
+
+        // Check if "exclude all coupons" is enabled
+        if ( ! empty( $config['exclude_all_coupons'] ) && WC()->cart ) {
+            $applied_coupons = WC()->cart->get_applied_coupons();
+            if ( ! empty( $applied_coupons ) && is_array( $applied_coupons ) && count( $applied_coupons ) > 0 ) {
+                $has_excluded_coupon = true;
+            }
+        }
+
+        // If not excluding all, check for specific excluded coupons
+        if ( ! $has_excluded_coupon && ! empty( $config['exclude_coupons_enabled'] ) && WC()->cart ) {
+            $excluded_coupons = $config['exclude_coupons'] ?? [];
+            if ( ! empty( $excluded_coupons ) && is_array( $excluded_coupons ) ) {
+                $applied_coupons = WC()->cart->get_applied_coupons();
+                // Normalize coupon codes to lowercase for case-insensitive comparison
+                $excluded_coupons_normalized = array_map( 'strtolower', $excluded_coupons );
+                foreach ( $applied_coupons as $applied_code ) {
+                    $applied_code_normalized = strtolower( $applied_code );
+                    if ( in_array( $applied_code_normalized, $excluded_coupons_normalized, true ) ) {
+                        $has_excluded_coupon = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Prevent redemption if excluded coupon is present
+        if ( $has_excluded_coupon ) {
+            WC()->session->__unset( 'wclr_points_to_redeem' );
+            WC()->session->__unset( 'wclr_manual_override' );
+            $message = ! empty( $config['exclude_all_coupons'] )
+                ? __( 'Point redemption is disabled when coupons are applied.', 'wc-loyalty-rewards' )
+                : __( 'Point redemption is disabled when excluded coupons are applied.', 'wc-loyalty-rewards' );
+            wp_send_json_error( [ 'message' => $message ] );
+            return;
         }
 
         $points = isset( $_POST['points'] ) ? (int) wp_unslash( $_POST['points'] ) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Missing, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
@@ -130,6 +214,68 @@ class Redemption_Service {
     }
 
     /**
+     * Handle AJAX request to remove all coupons.
+     */
+    public function handle_ajax_remove_all_coupons(): void {
+        check_ajax_referer( 'wclr_remove_coupons', 'nonce' );
+
+        // Ensure WooCommerce is loaded
+        if ( ! function_exists( 'WC' ) || ! WC()->cart ) {
+            wp_send_json_error( [ 'message' => __( 'Cart not found.', 'wc-loyalty-rewards' ) ] );
+            return;
+        }
+
+        // Get applied coupons before removing
+        $applied_coupons = WC()->cart->get_applied_coupons();
+        if ( empty( $applied_coupons ) || ! is_array( $applied_coupons ) ) {
+            wp_send_json_error( [ 'message' => __( 'No coupons applied.', 'wc-loyalty-rewards' ) ] );
+            return;
+        }
+
+        // Store coupon codes before removal (in case we need them)
+        $coupon_codes = array_values( $applied_coupons );
+
+        // Remove all coupons
+        foreach ( $coupon_codes as $coupon_code ) {
+            WC()->cart->remove_coupon( $coupon_code );
+        }
+
+        // Persist cart changes
+        WC()->cart->calculate_totals();
+        wc_clear_notices();
+
+        // Get updated fragments for checkout/cart
+        $fragments = [];
+
+        // Add redemption block fragment
+        $html = $this->render_redeem_block();
+        if ( $html ) {
+            $fragments['.wclr-redeem-block-wrapper'] = $html;
+        }
+
+        // Add cart totals fragment for checkout
+        if ( is_checkout() ) {
+            ob_start();
+            woocommerce_checkout_coupon_form();
+            woocommerce_checkout_login_form();
+            woocommerce_order_review();
+            $fragments['.woocommerce-checkout-review-order'] = ob_get_clean();
+        }
+
+        // Add cart totals fragment for cart page
+        if ( is_cart() ) {
+            ob_start();
+            woocommerce_cart_totals();
+            $fragments['.cart_totals'] = ob_get_clean();
+        }
+
+        wp_send_json_success( [
+            'message'   => __( 'Coupons removed successfully. You can now use your points.', 'wc-loyalty-rewards' ),
+            'fragments' => $fragments,
+        ] );
+    }
+
+    /**
      * Render UI in cart.
      */
     public function render_cart_ui(): void {
@@ -163,19 +309,39 @@ class Redemption_Service {
             return;
         }
 
-        // Skip redemption if any applied coupon is in the exclusion list (only if exclusion is enabled).
-        if ( ! empty( $config['exclude_coupons_enabled'] ) ) {
+        // Check for excluded coupons first - this must happen before any point calculation
+        $has_excluded_coupon = false;
+
+        // Check if "exclude all coupons" is enabled
+        if ( ! empty( $config['exclude_all_coupons'] ) ) {
+            $applied_coupons = $cart->get_applied_coupons();
+            if ( ! empty( $applied_coupons ) && is_array( $applied_coupons ) && count( $applied_coupons ) > 0 ) {
+                $has_excluded_coupon = true;
+            }
+        }
+
+        // If not excluding all, check for specific excluded coupons
+        if ( ! $has_excluded_coupon && ! empty( $config['exclude_coupons_enabled'] ) ) {
             $excluded_coupons = $config['exclude_coupons'] ?? [];
             if ( ! empty( $excluded_coupons ) && is_array( $excluded_coupons ) ) {
                 $applied_coupons = $cart->get_applied_coupons();
+                // Normalize coupon codes to lowercase for case-insensitive comparison
+                $excluded_coupons_normalized = array_map( 'strtolower', $excluded_coupons );
                 foreach ( $applied_coupons as $applied_code ) {
-                    if ( in_array( $applied_code, $excluded_coupons, true ) ) {
-                        WC()->session->__unset( 'wclr_points_to_redeem' );
-                        WC()->session->__unset( 'wclr_manual_override' );
-                        return;
+                    $applied_code_normalized = strtolower( $applied_code );
+                    if ( in_array( $applied_code_normalized, $excluded_coupons_normalized, true ) ) {
+                        $has_excluded_coupon = true;
+                        break;
                     }
                 }
             }
+        }
+
+        // If excluded coupon is present, clear session and prevent redemption
+        if ( $has_excluded_coupon ) {
+            WC()->session->__unset( 'wclr_points_to_redeem' );
+            WC()->session->__unset( 'wclr_manual_override' );
+            return;
         }
 
         $user_id = get_current_user_id();
@@ -194,8 +360,8 @@ class Redemption_Service {
         $manual_override  = WC()->session->get( 'wclr_manual_override', false );
 
         // Auto-recalculate on every cart run so qty/total changes are reflected.
-        // Only apply auto mode if user hasn't manually set points.
-        if ( ! $manual_override && ! empty( $config['auto_mode'] ) && 'disabled' !== $config['auto_mode'] ) {
+        // Only apply auto mode if user hasn't manually set points and no excluded coupon is present.
+        if ( ! $manual_override && ! $has_excluded_coupon && ! empty( $config['auto_mode'] ) && 'disabled' !== $config['auto_mode'] ) {
             $points_to_redeem = $this->calculate_auto_points( $config, $balance );
             WC()->session->set( 'wclr_points_to_redeem', $points_to_redeem );
         }
@@ -281,13 +447,26 @@ class Redemption_Service {
             $auto_redeemed_points = $current;
         }
         $redemption_blocked_by_coupon = false;
-        if ( ! empty( $config['exclude_coupons_enabled'] ) ) {
+
+        // Check if "exclude all coupons" is enabled
+        if ( ! empty( $config['exclude_all_coupons'] ) && $cart ) {
+            $applied_coupons = $cart->get_applied_coupons();
+            if ( ! empty( $applied_coupons ) && is_array( $applied_coupons ) && count( $applied_coupons ) > 0 ) {
+                $redemption_blocked_by_coupon = true;
+            }
+        }
+
+        // If not excluding all, check for specific excluded coupons
+        if ( ! $redemption_blocked_by_coupon && ! empty( $config['exclude_coupons_enabled'] ) ) {
             $excluded_coupons = $config['exclude_coupons'] ?? [];
             if ( ! empty( $excluded_coupons ) && is_array( $excluded_coupons ) ) {
                 $applied_coupons = $cart ? $cart->get_applied_coupons() : [];
                 if ( ! empty( $applied_coupons ) ) {
+                    // Normalize coupon codes to lowercase for case-insensitive comparison
+                    $excluded_coupons_normalized = array_map( 'strtolower', $excluded_coupons );
                     foreach ( $applied_coupons as $applied_code ) {
-                        if ( in_array( $applied_code, $excluded_coupons, true ) ) {
+                        $applied_code_normalized = strtolower( $applied_code );
+                        if ( in_array( $applied_code_normalized, $excluded_coupons_normalized, true ) ) {
                             $redemption_blocked_by_coupon = true;
                             break;
                         }
@@ -320,7 +499,12 @@ class Redemption_Service {
             <?php if ( $redemption_blocked_by_coupon ) : ?>
                 <div class="wclr-auto-notice wclr-warning-notice">
                     <span class="wclr-notice-icon">⚠️</span>
-                    <span class="wclr-notice-text"><?php esc_html_e( 'Point redemption is disabled when coupons are applied.', 'wc-loyalty-rewards' ); ?></span>
+                    <span class="wclr-notice-text">
+                        <?php esc_html_e( 'Point redemption is disabled when coupons are applied.', 'wc-loyalty-rewards' ); ?>
+                        <button type="button" class="wclr-remove-coupons-link" data-wclr-remove-coupons style="margin-left: 10px; text-decoration: underline; background: none; border: none; color: inherit; cursor: pointer; font-size: inherit;">
+                            <?php esc_html_e( 'Remove coupons to use points', 'wc-loyalty-rewards' ); ?>
+                        </button>
+                    </span>
                 </div>
             <?php elseif ( $auto_mode && ! $manual_override && $auto_redeemed_points > 0 ) : ?>
                 <div class="wclr-auto-redeem-info">
@@ -380,7 +564,7 @@ class Redemption_Service {
                         </div>
                     </form>
                 </div>
-            <?php else : ?>
+            <?php elseif ( ! $redemption_blocked_by_coupon ) : ?>
                 <div class="wclr-auto-notice">
                     <span class="wclr-notice-icon">ℹ️</span>
                     <span class="wclr-notice-text"><?php esc_html_e( 'Manual point entry is disabled. Auto redemption will be applied if enabled.', 'wc-loyalty-rewards' ); ?></span>
@@ -441,6 +625,57 @@ class Redemption_Service {
      */
     public function shortcode_redeem_widget(): string {
         return $this->render_redeem_block();
+    }
+
+    /**
+     * Check for excluded coupons and clear points session if found.
+     * Called when coupons are applied or removed.
+     */
+    public function check_and_clear_excluded_coupons(): void {
+        if ( ! WC()->cart ) {
+            return;
+        }
+
+        $settings = Settings_Cache::get();
+        $config   = $settings['redemption'] ?? [];
+
+        if ( empty( $config['enabled'] ) ) {
+            return;
+        }
+
+        $applied_coupons = WC()->cart->get_applied_coupons();
+        if ( empty( $applied_coupons ) || ! is_array( $applied_coupons ) || count( $applied_coupons ) === 0 ) {
+            return;
+        }
+
+        $should_clear = false;
+
+        // Check if "exclude all coupons" is enabled
+        if ( ! empty( $config['exclude_all_coupons'] ) ) {
+            $should_clear = true;
+        }
+
+        // If not excluding all, check for specific excluded coupons
+        if ( ! $should_clear && ! empty( $config['exclude_coupons_enabled'] ) ) {
+            $excluded_coupons = $config['exclude_coupons'] ?? [];
+            if ( ! empty( $excluded_coupons ) && is_array( $excluded_coupons ) ) {
+                // Normalize coupon codes to lowercase for case-insensitive comparison
+                $excluded_coupons_normalized = array_map( 'strtolower', $excluded_coupons );
+                foreach ( $applied_coupons as $applied_code ) {
+                    $applied_code_normalized = strtolower( $applied_code );
+                    if ( in_array( $applied_code_normalized, $excluded_coupons_normalized, true ) ) {
+                        $should_clear = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if ( $should_clear ) {
+            // Excluded coupon found - clear points session immediately
+            WC()->session->__unset( 'wclr_points_to_redeem' );
+            WC()->session->__unset( 'wclr_manual_override' );
+        }
     }
 }
 

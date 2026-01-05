@@ -68,17 +68,36 @@ class Points_Service {
             return 0;
         }
 
-        // Skip earning if any applied coupon is in the exclusion list (only if exclusion is enabled).
-        if ( ! empty( $settings['order_earning']['exclude_coupons_enabled'] ) ) {
+        // Skip earning if excluded coupons are present
+        $has_excluded_coupon = false;
+
+        // Check if "exclude all coupons" is enabled
+        if ( ! empty( $settings['order_earning']['exclude_all_coupons'] ) ) {
+            $applied_coupons = $order->get_coupon_codes();
+            if ( ! empty( $applied_coupons ) && is_array( $applied_coupons ) && count( $applied_coupons ) > 0 ) {
+                $has_excluded_coupon = true;
+            }
+        }
+
+        // If not excluding all, check for specific excluded coupons
+        if ( ! $has_excluded_coupon && ! empty( $settings['order_earning']['exclude_coupons_enabled'] ) ) {
             $excluded_coupons = $settings['order_earning']['exclude_coupons'] ?? [];
             if ( ! empty( $excluded_coupons ) && is_array( $excluded_coupons ) ) {
                 $applied_coupons = $order->get_coupon_codes();
+                // Normalize coupon codes to lowercase for case-insensitive comparison
+                $excluded_coupons_normalized = array_map( 'strtolower', $excluded_coupons );
                 foreach ( $applied_coupons as $applied_code ) {
-                    if ( in_array( $applied_code, $excluded_coupons, true ) ) {
-                        return 0;
+                    $applied_code_normalized = strtolower( $applied_code );
+                    if ( in_array( $applied_code_normalized, $excluded_coupons_normalized, true ) ) {
+                        $has_excluded_coupon = true;
+                        break;
                     }
                 }
             }
+        }
+
+        if ( $has_excluded_coupon ) {
+            return 0;
         }
 
         $include_tax      = ! empty( $settings['order_earning']['include_tax'] );
@@ -92,6 +111,15 @@ class Points_Service {
         if ( $include_shipping ) {
             $subtotal += (float) $order->get_shipping_total();
         }
+
+        // Subtract coupon discounts - points are earned on amount actually paid
+        // get_total_discount() returns discount excluding tax
+        $coupon_discount = (float) $order->get_total_discount();
+        if ( $include_tax ) {
+            // Add discount tax if tax is included in earning calculation
+            $coupon_discount += (float) $order->get_discount_tax();
+        }
+        $subtotal -= $coupon_discount;
 
         // Subtract redemption discount - points are earned on amount actually paid
         // Check for loyalty points fee (negative fee = discount)
@@ -190,6 +218,13 @@ class Points_Service {
             $subtotal += (float) $cart->get_shipping_total();
         }
 
+        // Subtract coupon discounts - points are earned on amount actually paid
+        $coupon_discount = (float) $cart->get_discount_total();
+        if ( ! empty( $settings['order_earning']['include_tax'] ) ) {
+            $coupon_discount += (float) $cart->get_discount_tax();
+        }
+        $subtotal -= $coupon_discount;
+
         // Calculate redemption discount that will be applied
         $redemption_discount = 0.0;
         $config = $settings['redemption'] ?? [];
@@ -239,17 +274,36 @@ class Points_Service {
 
         $flash_multiplier = $this->get_flash_multiplier_for_cart( $cart );
 
-        // Skip earning if any applied coupon is in the exclusion list (only if exclusion is enabled).
-        if ( ! empty( $settings['order_earning']['exclude_coupons_enabled'] ) ) {
+        // Skip earning if excluded coupons are present
+        $has_excluded_coupon = false;
+
+        // Check if "exclude all coupons" is enabled
+        if ( ! empty( $settings['order_earning']['exclude_all_coupons'] ) ) {
+            $applied_coupons = $cart->get_applied_coupons();
+            if ( ! empty( $applied_coupons ) && is_array( $applied_coupons ) && count( $applied_coupons ) > 0 ) {
+                $has_excluded_coupon = true;
+            }
+        }
+
+        // If not excluding all, check for specific excluded coupons
+        if ( ! $has_excluded_coupon && ! empty( $settings['order_earning']['exclude_coupons_enabled'] ) ) {
             $excluded_coupons = $settings['order_earning']['exclude_coupons'] ?? [];
             if ( ! empty( $excluded_coupons ) && is_array( $excluded_coupons ) ) {
                 $applied_coupons = $cart->get_applied_coupons();
+                // Normalize coupon codes to lowercase for case-insensitive comparison
+                $excluded_coupons_normalized = array_map( 'strtolower', $excluded_coupons );
                 foreach ( $applied_coupons as $applied_code ) {
-                    if ( in_array( $applied_code, $excluded_coupons, true ) ) {
-                        return 0;
+                    $applied_code_normalized = strtolower( $applied_code );
+                    if ( in_array( $applied_code_normalized, $excluded_coupons_normalized, true ) ) {
+                        $has_excluded_coupon = true;
+                        break;
                     }
                 }
             }
+        }
+
+        if ( $has_excluded_coupon ) {
+            return 0;
         }
 
         $rate      = (float) ( $settings['base_rate'] ?? 1.0 );

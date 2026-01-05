@@ -99,6 +99,7 @@ class Frontend_Service {
             wp_enqueue_script( 'wclr-frontend', WCLR_PLUGIN_URL . 'assets/js/frontend.js', [ 'jquery' ], WCLR_VERSION, true );
             wp_localize_script( 'wclr-frontend', 'wclrFrontend', [
                 'ajaxUrl' => admin_url( 'admin-ajax.php' ),
+                'removeCouponsNonce' => wp_create_nonce( 'wclr_remove_coupons' ),
             ] );
         }
     }

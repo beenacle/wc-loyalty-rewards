@@ -119,6 +119,86 @@
     }
 
     /**
+     * Handle remove all coupons button click
+     */
+    function handleRemoveCouponsClick(e) {
+        const button = e.target.closest('[data-wclr-remove-coupons]');
+        if (!button) {
+            return;
+        }
+
+        e.preventDefault();
+
+        if (!confirm('Are you sure you want to remove all coupons? You will be able to use your points instead.')) {
+            return;
+        }
+
+        const originalText = button.textContent;
+        button.disabled = true;
+        button.textContent = 'Removing...';
+
+        // Make AJAX request
+        const formData = new FormData();
+        formData.append('action', 'wclr_remove_all_coupons');
+        formData.append('nonce', wclrFrontend.removeCouponsNonce || '');
+
+        fetch(wclrFrontend.ajaxUrl, {
+            method: 'POST',
+            body: formData,
+            credentials: 'same-origin'
+        })
+        .then(function(response) {
+            return response.json();
+        })
+        .then(function(response) {
+            if (!response.ok) {
+                throw new Error('Network response was not ok');
+            }
+            return response.json();
+        })
+        .then(function(data) {
+            if (data.success) {
+                // Update fragments if provided
+                if (data.data && data.data.fragments && typeof jQuery !== 'undefined') {
+                    jQuery.each(data.data.fragments, function(key, value) {
+                        jQuery(key).replaceWith(value);
+                    });
+                }
+
+                // For checkout page - reload to ensure everything updates properly
+                if (typeof jQuery !== 'undefined' && jQuery('body').hasClass('woocommerce-checkout')) {
+                    // Reload the page to ensure checkout updates properly
+                    window.location.reload();
+                }
+                // For cart page - trigger cart update
+                else if (typeof jQuery !== 'undefined' && jQuery('body').hasClass('woocommerce-cart')) {
+                    // Trigger cart update via AJAX
+                    jQuery(document.body).trigger('wc_fragment_refresh');
+                    // Also update cart totals
+                    jQuery(document.body).trigger('wc_update_cart');
+                    // Reload after a short delay to ensure everything updates
+                    setTimeout(function() {
+                        window.location.reload();
+                    }, 500);
+                } else {
+                    // Fallback: reload page
+                    window.location.reload();
+                }
+            } else {
+                alert(data.data?.message || 'An error occurred. Please try again.');
+                button.disabled = false;
+                button.textContent = originalText;
+            }
+        })
+        .catch(function(error) {
+            console.error('Remove coupons error:', error);
+            alert('An error occurred. Please try again.');
+            button.disabled = false;
+            button.textContent = originalText;
+        });
+    }
+
+    /**
      * Initialize when DOM is ready
      */
     function init() {
@@ -127,6 +207,9 @@
 
         // Use event delegation for edit links (only add once)
         document.addEventListener('click', handleEditLinkClick, true);
+
+        // Use event delegation for remove coupons button
+        document.addEventListener('click', handleRemoveCouponsClick, true);
     }
 
     if (document.readyState === 'loading') {

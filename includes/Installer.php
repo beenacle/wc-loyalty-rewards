@@ -104,6 +104,7 @@ class Installer {
                 'include_shipping' => false,
                 'min_order'        => 0,
                 'refund_behavior'  => 'reverse', // reverse|prorate|ignore.
+                'exclude_all_coupons' => false, // Exclude all coupons from earning points
                 'exclude_coupons'  => [], // Array of coupon codes to exclude.
             ],
             'signup_bonus'          => [
@@ -139,6 +140,7 @@ class Installer {
                 'auto_percent'    => 50,
                 'return_on_refund'=> true,
                 'allow_manual_input' => true,
+                'exclude_all_coupons' => false, // Exclude all coupons from redemption
                 'exclude_coupons' => [], // Array of coupon codes to exclude.
             ],
             'display'               => [
