@@ -4,6 +4,7 @@ namespace WCLR;
 
 use WCLR\Admin\Admin_Service;
 use WCLR\Frontend\Frontend_Service;
+use WCLR\Services\Analytics_Service;
 use WCLR\Services\Cron_Service;
 use WCLR\Services\Earning_Rules_Manager;
 use WCLR\Services\Points_Service;
@@ -54,15 +55,17 @@ class Plugin {
         $referral_service = new Referral_Service( $points_service );
         $redemption       = new Redemption_Service( $points_service, $tier_service );
         $earning_manager  = new Earning_Rules_Manager( $points_service, $tier_service, $referral_service );
+        $analytics        = new Analytics_Service();
 
         return [
-            new Admin_Service( $points_service, $tier_service, $referral_service ),
+            new Admin_Service( $points_service, $tier_service, $referral_service, $analytics ),
             new Frontend_Service( $points_service, $tier_service, $referral_service ),
             $points_service,
             $tier_service,
             $referral_service,
             $redemption,
             $earning_manager,
+            $analytics,
             new Cron_Service( $points_service ),
         ];
     }

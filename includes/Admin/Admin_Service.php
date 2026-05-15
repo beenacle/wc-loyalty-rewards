@@ -3,6 +3,7 @@
 namespace WCLR\Admin;
 
 use WCLR\Helpers\Settings_Cache;
+use WCLR\Services\Analytics_Service;
 use WCLR\Services\Points_Service;
 use WCLR\Services\Referral_Service;
 use WCLR\Services\Tier_Service;
@@ -17,11 +18,13 @@ class Admin_Service {
     private Points_Service $points;
     private Tier_Service $tiers;
     private Referral_Service $referrals;
+    private ?Analytics_Service $analytics;
 
-    public function __construct( Points_Service $points, Tier_Service $tiers, Referral_Service $referrals ) {
+    public function __construct( Points_Service $points, Tier_Service $tiers, Referral_Service $referrals, ?Analytics_Service $analytics = null ) {
         $this->points    = $points;
         $this->tiers     = $tiers;
         $this->referrals = $referrals;
+        $this->analytics = $analytics;
     }
 
     public function register(): void {
@@ -66,6 +69,15 @@ class Admin_Service {
             'manage_woocommerce',
             'wclr',
             [ $this, 'render_settings_page' ]
+        );
+
+        add_submenu_page(
+            'wclr',
+            __( 'Analytics', 'wc-loyalty-rewards' ),
+            __( 'Analytics', 'wc-loyalty-rewards' ),
+            'manage_woocommerce',
+            'wclr-analytics',
+            [ $this, 'render_analytics_page' ]
         );
 
         add_submenu_page(
@@ -119,6 +131,29 @@ class Admin_Service {
         if ( function_exists( 'WC' ) ) {
             wp_enqueue_script( 'wc-enhanced-select' );
             wp_enqueue_style( 'woocommerce_admin_styles' );
+        }
+
+        // Analytics dashboard assets (only on its own screen).
+        if ( false !== strpos( $hook, 'wclr-analytics' ) ) {
+            wp_enqueue_style( 'wclr-admin-analytics', WCLR_PLUGIN_URL . 'assets/css/admin-analytics.css', [ 'wclr-admin' ], WCLR_VERSION );
+            wp_enqueue_script( 'wclr-chartjs', WCLR_PLUGIN_URL . 'assets/vendor/chart.umd.min.js', [], '4.4.4', true );
+            wp_enqueue_script( 'wclr-admin-analytics', WCLR_PLUGIN_URL . 'assets/js/admin-analytics.js', [ 'wclr-chartjs', 'wp-i18n' ], WCLR_VERSION, true );
+            wp_localize_script(
+                'wclr-admin-analytics',
+                'wclrAnalytics',
+                [
+                    'ajaxUrl' => admin_url( 'admin-ajax.php' ),
+                    'nonce'   => wp_create_nonce( 'wclr_analytics' ),
+                    'i18n'    => [
+                        'issued'    => __( 'Points issued', 'wc-loyalty-rewards' ),
+                        'redeemed'  => __( 'Points redeemed', 'wc-loyalty-rewards' ),
+                        'users'     => __( 'Users', 'wc-loyalty-rewards' ),
+                        'loading'   => __( 'Loading...', 'wc-loyalty-rewards' ),
+                        'error'     => __( 'Failed to load analytics. Please retry.', 'wc-loyalty-rewards' ),
+                        'noData'    => __( 'No data for the selected range.', 'wc-loyalty-rewards' ),
+                    ],
+                ]
+            );
         }
     }
 
@@ -918,6 +953,69 @@ class Admin_Service {
     /**
      * Render ledger page (simplified).
      */
+    /**
+     * Render the Analytics dashboard page (shell only; data is loaded via AJAX).
+     */
+    public function render_analytics_page(): void {
+        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+            wp_die( esc_html__( 'You do not have permission.', 'wc-loyalty-rewards' ) );
+        }
+
+        $today    = current_time( 'Y-m-d' );
+        $from_def = gmdate( 'Y-m-d', strtotime( '-29 days', strtotime( $today ) ) );
+        ?>
+        <div class="wrap wclr-analytics">
+            <h1><?php esc_html_e( 'Loyalty Analytics', 'wc-loyalty-rewards' ); ?></h1>
+
+            <form class="wclr-analytics-controls" onsubmit="return false;">
+                <label>
+                    <span><?php esc_html_e( 'From', 'wc-loyalty-rewards' ); ?></span>
+                    <input type="date" id="wclr-analytics-from" value="<?php echo esc_attr( $from_def ); ?>" max="<?php echo esc_attr( $today ); ?>" />
+                </label>
+                <label>
+                    <span><?php esc_html_e( 'To', 'wc-loyalty-rewards' ); ?></span>
+                    <input type="date" id="wclr-analytics-to" value="<?php echo esc_attr( $today ); ?>" max="<?php echo esc_attr( $today ); ?>" />
+                </label>
+                <label>
+                    <span><?php esc_html_e( 'Granularity', 'wc-loyalty-rewards' ); ?></span>
+                    <select id="wclr-analytics-granularity">
+                        <option value="day"><?php esc_html_e( 'Day', 'wc-loyalty-rewards' ); ?></option>
+                        <option value="week"><?php esc_html_e( 'Week', 'wc-loyalty-rewards' ); ?></option>
+                        <option value="month"><?php esc_html_e( 'Month', 'wc-loyalty-rewards' ); ?></option>
+                    </select>
+                </label>
+                <div class="wclr-analytics-presets">
+                    <button type="button" class="button" data-preset="7"><?php esc_html_e( 'Last 7 days', 'wc-loyalty-rewards' ); ?></button>
+                    <button type="button" class="button" data-preset="30"><?php esc_html_e( 'Last 30 days', 'wc-loyalty-rewards' ); ?></button>
+                    <button type="button" class="button" data-preset="90"><?php esc_html_e( 'Last 90 days', 'wc-loyalty-rewards' ); ?></button>
+                    <button type="button" class="button" data-preset="ytd"><?php esc_html_e( 'YTD', 'wc-loyalty-rewards' ); ?></button>
+                </div>
+                <button type="button" class="button button-primary" id="wclr-analytics-apply"><?php esc_html_e( 'Apply', 'wc-loyalty-rewards' ); ?></button>
+                <span class="spinner" id="wclr-analytics-spinner"></span>
+            </form>
+
+            <div class="wclr-analytics-kpis" id="wclr-analytics-kpis"></div>
+
+            <div class="wclr-analytics-grid">
+                <div class="wclr-analytics-card wclr-analytics-card--wide">
+                    <h2><?php esc_html_e( 'Points issued vs redeemed', 'wc-loyalty-rewards' ); ?></h2>
+                    <div class="wclr-chart-wrap"><canvas id="wclr-chart-timeseries"></canvas></div>
+                </div>
+                <div class="wclr-analytics-card">
+                    <h2><?php esc_html_e( 'Earning by context', 'wc-loyalty-rewards' ); ?></h2>
+                    <div class="wclr-chart-wrap"><canvas id="wclr-chart-context"></canvas></div>
+                </div>
+                <div class="wclr-analytics-card">
+                    <h2><?php esc_html_e( 'Members per tier', 'wc-loyalty-rewards' ); ?></h2>
+                    <div class="wclr-chart-wrap"><canvas id="wclr-chart-tiers"></canvas></div>
+                </div>
+            </div>
+
+            <p class="description wclr-analytics-meta" id="wclr-analytics-meta"></p>
+        </div>
+        <?php
+    }
+
     public function render_ledger_page(): void {
         if ( ! current_user_can( 'manage_woocommerce' ) ) {
             wp_die( esc_html__( 'You do not have permission.', 'wc-loyalty-rewards' ) );

@@ -1,0 +1,108 @@
+.wclr-analytics .wclr-analytics-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 12px;
+    background: #fff;
+    padding: 14px 16px;
+    border: 1px solid #c3c4c7;
+    border-radius: 4px;
+    margin: 16px 0;
+}
+
+.wclr-analytics .wclr-analytics-controls label {
+    display: flex;
+    flex-direction: column;
+    font-size: 12px;
+    color: #50575e;
+}
+
+.wclr-analytics .wclr-analytics-controls label span {
+    margin-bottom: 4px;
+    font-weight: 600;
+}
+
+.wclr-analytics .wclr-analytics-presets {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.wclr-analytics #wclr-analytics-spinner {
+    float: none;
+    margin: 0;
+}
+.wclr-analytics #wclr-analytics-spinner.is-active {
+    visibility: visible;
+}
+
+.wclr-analytics-kpis {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 12px;
+    margin-bottom: 20px;
+}
+
+.wclr-kpi {
+    background: #fff;
+    border: 1px solid #c3c4c7;
+    border-radius: 6px;
+    padding: 14px 16px;
+    box-shadow: 0 1px 1px rgba(0,0,0,0.04);
+}
+
+.wclr-kpi__value {
+    font-size: 22px;
+    font-weight: 600;
+    color: #1d2327;
+    line-height: 1.2;
+}
+
+.wclr-kpi__label {
+    margin-top: 4px;
+    font-size: 12px;
+    color: #646970;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.wclr-analytics-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+}
+
+.wclr-analytics-card {
+    background: #fff;
+    border: 1px solid #c3c4c7;
+    border-radius: 6px;
+    padding: 16px;
+    box-shadow: 0 1px 1px rgba(0,0,0,0.04);
+}
+
+.wclr-analytics-card--wide {
+    grid-column: 1 / -1;
+}
+
+.wclr-analytics-card h2 {
+    margin: 0 0 12px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #1d2327;
+}
+
+.wclr-chart-wrap {
+    position: relative;
+    height: 320px;
+}
+
+.wclr-analytics-meta {
+    margin-top: 16px;
+    color: #646970;
+}
+
+@media (max-width: 900px) {
+    .wclr-analytics-grid {
+        grid-template-columns: 1fr;
+    }
+}

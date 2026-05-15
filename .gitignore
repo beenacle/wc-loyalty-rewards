@@ -15,6 +15,9 @@ Thumbs.db
 # Dependencies
 vendor/
 node_modules/
+# Track bundled front-end vendor assets (e.g. Chart.js).
+!assets/vendor/
+!assets/vendor/**
 
 # Build & cache
 dist/

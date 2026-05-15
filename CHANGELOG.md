@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.0
+- New: Admin **Analytics dashboard** under Loyalty & Rewards → Analytics.
+  - KPI cards: points issued, points redeemed, redemption rate, active members, avg points/order, outstanding balance, liability value (in store currency).
+  - Charts: points issued vs redeemed over time (day/week/month), earning by context, members per tier.
+  - Date range presets (Last 7 / 30 / 90 days, YTD) and custom range picker.
+  - AJAX-powered, capability-gated (`manage_woocommerce`), nonce-verified.
+- New: `Analytics_Service` with 5-minute transient caching, auto-invalidated on earn/redeem/admin-adjust hooks.
+- New: Chart.js 4.4.4 bundled locally in `assets/vendor/` (no CDN dependency).
+
 ## 1.0.7
 - Fixed CSS and JS asset versioning to use plugin version instead of hardcoded '1.0.0'
 - Assets now properly cache-bust when plugin version is updated
