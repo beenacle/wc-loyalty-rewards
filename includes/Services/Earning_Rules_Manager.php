@@ -24,10 +24,34 @@ class Earning_Rules_Manager {
 
     public function register(): void {
         add_action( 'woocommerce_order_status_changed', [ $this, 'handle_order_status_changed' ], 20, 4 );
+        add_action( 'woocommerce_order_status_changed', [ $this, 'handle_order_reversal' ], 20, 4 );
         add_action( 'user_register', [ $this, 'handle_signup_bonus' ] );
         add_action( 'wp', [ $this, 'handle_daily_visit' ] );
         add_action( 'init', [ $this, 'capture_ref_param' ] );
         add_action( 'user_register', [ $this->referrals, 'maybe_log_referral_on_signup' ] );
+    }
+
+    /**
+     * Reverse earned points (and optionally restore redeemed points) when an order
+     * is cancelled or refunded, so refunded sales do not keep inflating balances.
+     *
+     * @param int      $order_id   Order ID.
+     * @param string   $old_status Previous status.
+     * @param string   $new_status New status.
+     * @param WC_Order $order      Order object.
+     */
+    public function handle_order_reversal( $order_id, string $old_status, string $new_status, $order ): void {
+        if ( ! in_array( $new_status, [ 'cancelled', 'refunded' ], true ) ) {
+            return;
+        }
+        if ( ! $order || ! is_a( $order, 'WC_Order' ) ) {
+            $order = wc_get_order( $order_id );
+        }
+        if ( ! $order ) {
+            return;
+        }
+        $this->points->reverse_order_earnings( $order );
+        $this->points->restore_redeemed_points( $order );
     }
 
     /**

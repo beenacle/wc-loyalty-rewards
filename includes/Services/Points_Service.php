@@ -152,17 +152,39 @@ class Points_Service {
         $points = apply_filters( 'wc_loyalty_rewards_earn_rate', $points, $order );
 
         if ( $points > 0 ) {
-            $this->add_points(
-                $user_id,
-                $points,
-                'earn',
-                [
-                    'context'  => 'order',
-                    'order_id' => $order->get_id(),
-                ]
+            // Atomically guard against concurrent status-change events (bulk edits,
+            // gateway IPN retries, ERP integrations) double-awarding order points.
+            // The early get_meta() guard above is a fast path; this re-reads the
+            // flag fresh under a per-order lock so exactly one writer awards. On
+            // lock-acquire failure we bail (return 0): another worker holds the
+            // lock and is awarding, so we must NOT proceed unguarded.
+            $order_id = $order->get_id();
+            return (int) $this->with_order_lock(
+                $order_id,
+                'order_award',
+                function () use ( $order, $order_id, $user_id, $points ) {
+                    $fresh  = wc_get_order( $order_id );
+                    $target = $fresh ? $fresh : $order;
+                    if ( $target->get_meta( '_wclr_points_awarded', true ) ) {
+                        return 0;
+                    }
+                    $this->add_points(
+                        $user_id,
+                        $points,
+                        'earn',
+                        [
+                            'context'  => 'order',
+                            'order_id' => $order_id,
+                        ]
+                    );
+                    $target->update_meta_data( '_wclr_points_awarded', $points );
+                    // Allow a future cancel/refund to reverse this fresh award.
+                    $target->delete_meta_data( '_wclr_points_earn_reversed' );
+                    $target->save();
+                    return $points;
+                },
+                0
             );
-            $order->update_meta_data( '_wclr_points_awarded', $points );
-            $order->save();
         }
 
         return $points;
@@ -181,16 +203,62 @@ class Points_Service {
         if ( $awarded || $points <= 0 ) {
             return 0;
         }
+
+        // Durable, identity-stable guard. The per-user `_wclr_signup_awarded` meta
+        // is wiped when an account is deleted, so a delete + re-register (which gets
+        // a fresh user_id) would otherwise re-earn the bonus. The ledger row
+        // persists (even orphaned), so we record the registrant's email hash there
+        // and refuse a repeat for the same email.
+        $email_hash = $this->signup_email_hash( $user_id );
+        if ( '' !== $email_hash && $this->signup_already_awarded_for_email( $email_hash ) ) {
+            update_user_meta( $user_id, '_wclr_signup_awarded', 1 );
+            return 0;
+        }
+
         $this->add_points(
             $user_id,
             $points,
             'earn',
             [
-                'context' => 'signup',
+                'context'    => 'signup',
+                'email_hash' => $email_hash,
             ]
         );
         update_user_meta( $user_id, '_wclr_signup_awarded', 1 );
         return $points;
+    }
+
+    /**
+     * Stable hash of a user's email, used for once-per-identity signup dedup.
+     */
+    private function signup_email_hash( int $user_id ): string {
+        $user = get_userdata( $user_id );
+        if ( ! $user || empty( $user->user_email ) ) {
+            return '';
+        }
+        return md5( strtolower( trim( $user->user_email ) ) );
+    }
+
+    /**
+     * Whether a signup bonus was ever awarded to this email hash.
+     *
+     * Reads the ledger (which is not removed when a WordPress user is deleted), so
+     * the guard survives account deletion and re-registration.
+     */
+    private function signup_already_awarded_for_email( string $email_hash ): bool {
+        if ( '' === $email_hash ) {
+            return false;
+        }
+        global $wpdb;
+        $table = $wpdb->prefix . 'wclr_points_ledger';
+        $like  = '%' . $wpdb->esc_like( '"email_hash":"' . $email_hash . '"' ) . '%';
+        $found = $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+            $wpdb->prepare(
+                "SELECT 1 FROM {$table} WHERE context = 'signup' AND meta LIKE %s LIMIT 1",
+                $like
+            )
+        );
+        return (bool) $found;
     }
 
     /**
@@ -470,6 +538,12 @@ class Points_Service {
 
     /**
      * Anniversary bonus.
+     *
+     * Dedupes on the membership-anniversary ordinal (the number of full years
+     * elapsed since registration) rather than the calendar year. This guarantees
+     * a user can never be paid twice for the same anniversary even if an award
+     * landed early (e.g. legacy day-0 awards stamped with the calendar year), and
+     * it cannot pay a "0th" anniversary for an account younger than one year.
      */
     public function earn_for_anniversary( int $user_id ): int {
         $settings = Settings_Cache::get();
@@ -487,10 +561,27 @@ class Points_Service {
             return 0;
         }
 
-        $year = (int) gmdate( 'Y' );
-        $key  = '_wclr_anniversary_year';
-        $last = (int) get_user_meta( $user_id, $key, true );
-        if ( $last === $year ) {
+        // The anniversary being paid = number of full years since registration.
+        $ordinal = $this->anniversary_ordinal( $user_id );
+        if ( $ordinal <= 0 ) {
+            // Defence in depth: never pay an anniversary for an account that has not
+            // completed a full year, even if a caller bypasses the cron date-guard.
+            return 0;
+        }
+
+        $ordinal_key = '_wclr_anniversary_last_ordinal';
+        $last_paid   = (int) get_user_meta( $user_id, $ordinal_key, true );
+        if ( $ordinal <= $last_paid ) {
+            // This anniversary (or an earlier one) was already paid.
+            return 0;
+        }
+
+        // Transition safety: the legacy guard stored the calendar year of the last
+        // award. If a payout already happened this calendar year under the old
+        // scheme, do not pay again during the upgrade window.
+        $year        = (int) gmdate( 'Y' );
+        $legacy_year = (int) get_user_meta( $user_id, '_wclr_anniversary_year', true );
+        if ( $legacy_year === $year ) {
             return 0;
         }
 
@@ -501,16 +592,60 @@ class Points_Service {
                 'earn',
                 [
                     'context' => 'anniversary',
+                    'ordinal' => $ordinal,
                 ]
             );
-            // Only update meta if points were successfully added.
-            update_user_meta( $user_id, $key, $year );
+            // Only update guards if points were successfully added.
+            update_user_meta( $user_id, $ordinal_key, $ordinal );
+            update_user_meta( $user_id, '_wclr_anniversary_year', $year ); // Keep legacy guard in sync.
             return $points;
         } catch ( \Exception $e ) {
             // If add_points fails, don't update meta so user can retry.
             // Re-throw to allow caller to handle if needed.
             throw $e;
         }
+    }
+
+    /**
+     * Number of full years elapsed since a user registered (their anniversary ordinal).
+     *
+     * Mirrors Cron_Service's start-of-day date-guard and its Feb-29 -> Feb-28
+     * leap-year substitution so the ordinal matches the day the cron actually fires.
+     *
+     * @param int $user_id User ID.
+     * @return int Completed anniversaries as of today (0 if under one year).
+     */
+    private function anniversary_ordinal( int $user_id ): int {
+        $user = get_userdata( $user_id );
+        if ( ! $user || empty( $user->user_registered ) ) {
+            return 0;
+        }
+        $reg = \DateTime::createFromFormat( 'Y-m-d H:i:s', $user->user_registered, new \DateTimeZone( 'UTC' ) );
+        if ( ! $reg ) {
+            return 0;
+        }
+        $reg->setTime( 0, 0, 0 );
+        $today = new \DateTime( 'today', new \DateTimeZone( 'UTC' ) );
+        if ( $today < $reg ) {
+            return 0;
+        }
+
+        $years     = (int) $today->format( 'Y' ) - (int) $reg->format( 'Y' );
+        $reg_month = (int) $reg->format( 'm' );
+        $reg_day   = (int) $reg->format( 'd' );
+        $cur_year  = (int) $today->format( 'Y' );
+        $is_leap   = ( 0 === $cur_year % 4 && 0 !== $cur_year % 100 ) || 0 === $cur_year % 400;
+
+        // A Feb-29 registrant's anniversary falls on Feb-28 in non-leap years.
+        $anniv_day = ( 2 === $reg_month && 29 === $reg_day && ! $is_leap ) ? 28 : $reg_day;
+        $today_md  = (int) $today->format( 'md' );
+        $anniv_md  = ( $reg_month * 100 ) + $anniv_day;
+        if ( $today_md < $anniv_md ) {
+            // This calendar year's anniversary has not arrived yet.
+            $years--;
+        }
+
+        return max( 0, $years );
     }
 
     /**
@@ -617,6 +752,11 @@ class Points_Service {
 
     /**
      * Redeem points for an order.
+     *
+     * Now finalized from server-side hooks (payment complete / paid status) as well
+     * as the thankyou page, so the deduction is serialized under a per-order lock and
+     * the duplicate guard is re-read fresh inside the lock to prevent double-deducts
+     * across concurrent requests (e.g. webhook + thankyou).
      */
     public function redeem_points_for_order( WC_Order $order, int $points_to_redeem ): int {
         $user_id = $order->get_user_id();
@@ -624,40 +764,229 @@ class Points_Service {
             return 0;
         }
 
-        // Prevent duplicate redemptions if points were already redeemed for this order.
-        if ( $order->get_meta( '_wclr_points_redeemed', true ) ) {
-            return 0;
-        }
+        $order_id = $order->get_id();
+        return (int) $this->with_order_lock(
+            $order_id,
+            'order_redeem',
+            function () use ( $order, $order_id, $user_id, $points_to_redeem ) {
+                $fresh = wc_get_order( $order_id );
+                $target = $fresh ? $fresh : $order;
 
-        $balance = $this->get_user_balance( $user_id )->balance;
-        $points  = min( $points_to_redeem, $balance );
-        if ( $points <= 0 ) {
-            return 0;
-        }
+                // Prevent duplicate redemptions (re-read fresh under the lock).
+                if ( $target->get_meta( '_wclr_points_redeemed', true ) ) {
+                    return 0;
+                }
 
-        do_action( 'wc_loyalty_rewards_before_redeem_points', $user_id, $points, $order );
+                $balance = $this->get_user_balance( $user_id )->balance;
+                $points  = min( $points_to_redeem, $balance );
+                if ( $points <= 0 ) {
+                    return 0;
+                }
 
-        $this->add_points(
-            $user_id,
-            -1 * $points,
-            'spend',
-            [
-                'context'  => 'order',
-                'order_id' => $order->get_id(),
-            ]
+                do_action( 'wc_loyalty_rewards_before_redeem_points', $user_id, $points, $target );
+
+                $this->add_points(
+                    $user_id,
+                    -1 * $points,
+                    'spend',
+                    [
+                        'context'  => 'order',
+                        'order_id' => $order_id,
+                    ]
+                );
+
+                // Mark order as redeemed; allow a later refund to restore these points.
+                $target->update_meta_data( '_wclr_points_redeemed', $points );
+                $target->delete_meta_data( '_wclr_redeem_restored' );
+                $target->save();
+
+                do_action( 'wc_loyalty_rewards_after_redeem_points', $user_id, $points, $target );
+                return $points;
+            },
+            0
         );
+    }
 
-        // Mark order as having points redeemed to prevent duplicate processing.
-        $order->update_meta_data( '_wclr_points_redeemed', $points );
-        $order->save();
+    /**
+     * Reverse points earned for an order when it is refunded or cancelled.
+     *
+     * Honors the order_earning.refund_behavior setting (reverse|prorate|ignore).
+     * Idempotent via the _wclr_points_earn_reversed order flag. Balance is reduced;
+     * lifetime is intentionally left unchanged (lifetime = total ever earned).
+     *
+     * @param WC_Order $order Order leaving an earning status.
+     * @return int Points reversed.
+     */
+    public function reverse_order_earnings( WC_Order $order ): int {
+        $user_id = $order->get_user_id();
+        if ( ! $user_id ) {
+            return 0;
+        }
 
-        do_action( 'wc_loyalty_rewards_after_redeem_points', $user_id, $points, $order );
-        return $points;
+        $settings = Settings_Cache::get();
+        $behavior = $settings['order_earning']['refund_behavior'] ?? 'reverse';
+        if ( 'ignore' === $behavior ) {
+            return 0;
+        }
+
+        $order_id = $order->get_id();
+        return (int) $this->with_order_lock(
+            $order_id,
+            'order_award',
+            function () use ( $order, $order_id, $user_id ) {
+                $fresh   = wc_get_order( $order_id );
+                $target  = $fresh ? $fresh : $order;
+                $awarded = (int) $target->get_meta( '_wclr_points_awarded', true );
+                if ( $awarded <= 0 ) {
+                    return 0;
+                }
+
+                // Do not drive the balance negative: only claw back what the user
+                // still holds. The actually-reversed amount is recorded for audit.
+                $balance = $this->get_user_balance( $user_id )->balance;
+                $reverse = (int) min( $awarded, max( 0, $balance ) );
+                if ( $reverse > 0 ) {
+                    $this->add_points(
+                        $user_id,
+                        -1 * $reverse,
+                        'adjustment',
+                        [
+                            'context'  => 'order_refund_reversal',
+                            'order_id' => $order_id,
+                        ]
+                    );
+                }
+
+                $target->update_meta_data( '_wclr_points_earn_reversed', $reverse );
+                // Clear the award flag so reactivating the order can re-award once.
+                $target->delete_meta_data( '_wclr_points_awarded' );
+                $target->save();
+                return $reverse;
+            },
+            0
+        );
+    }
+
+    /**
+     * Restore points a customer redeemed on an order when it is refunded/cancelled.
+     *
+     * Honors the redemption.return_on_refund setting. Idempotent via the
+     * _wclr_redeem_restored order flag.
+     *
+     * @param WC_Order $order Order leaving a paid status.
+     * @return int Points restored.
+     */
+    public function restore_redeemed_points( WC_Order $order ): int {
+        $settings = Settings_Cache::get();
+        if ( empty( $settings['redemption']['return_on_refund'] ) ) {
+            return 0;
+        }
+        $user_id = $order->get_user_id();
+        if ( ! $user_id ) {
+            return 0;
+        }
+
+        $order_id = $order->get_id();
+        return (int) $this->with_order_lock(
+            $order_id,
+            'order_redeem',
+            function () use ( $order, $order_id, $user_id ) {
+                $fresh    = wc_get_order( $order_id );
+                $target   = $fresh ? $fresh : $order;
+                $redeemed = (int) $target->get_meta( '_wclr_points_redeemed', true );
+                if ( $redeemed <= 0 ) {
+                    return 0;
+                }
+
+                $this->add_points(
+                    $user_id,
+                    $redeemed,
+                    'adjustment',
+                    [
+                        'context'  => 'redeem_refund',
+                        'order_id' => $order_id,
+                    ]
+                );
+
+                $target->update_meta_data( '_wclr_redeem_restored', $redeemed );
+                // Clear the redeemed flag so reactivating the order re-deducts the spend.
+                $target->delete_meta_data( '_wclr_points_redeemed' );
+                $target->save();
+                return $redeemed;
+            },
+            0
+        );
+    }
+
+    /**
+     * Acquire a cross-process advisory lock via MySQL GET_LOCK().
+     *
+     * Unlike wp_cache_add() (which is request-local without a persistent object
+     * cache drop-in), a MySQL named lock serializes across separate PHP
+     * processes/requests on the same database server.
+     *
+     * Note: callers may nest a per-order lock around the per-user lock taken here,
+     * which relies on multiple simultaneous named locks per session (MySQL >= 5.7.5
+     * / MariaDB >= 10.0.2). The plugin already requires WooCommerce 8.0+, so every
+     * supported database satisfies this.
+     *
+     * @param string $name    Logical lock name.
+     * @param int    $timeout Seconds to wait for the lock.
+     * @return bool True if the lock was granted.
+     */
+    private function db_lock( string $name, int $timeout = 5 ): bool {
+        global $wpdb;
+        $res = $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, %d)', $this->db_lock_key( $name ), $timeout ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.NotPrepared
+        return '1' === (string) $res;
+    }
+
+    /**
+     * Release a lock previously acquired with db_lock().
+     */
+    private function db_unlock( string $name ): void {
+        global $wpdb;
+        $wpdb->query( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $this->db_lock_key( $name ) ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.NotPrepared
+    }
+
+    /**
+     * Build a stable lock name (<=64 chars) namespaced by table prefix.
+     */
+    private function db_lock_key( string $name ): string {
+        global $wpdb;
+        return 'wclr_' . md5( $wpdb->prefix . $name );
+    }
+
+    /**
+     * Run a callback while holding a per-order cross-process lock.
+     *
+     * Returns the callback result, or $default if the lock could not be acquired
+     * (which callers treat as "another worker holds it"). The lock is always
+     * released, including when the callback throws.
+     *
+     * @param int      $order_id Order ID the lock is scoped to.
+     * @param string   $suffix   Lock purpose (e.g. 'order_award', 'order_redeem').
+     * @param callable $fn       Critical section.
+     * @param mixed    $default  Value returned when the lock is not acquired.
+     * @return mixed
+     */
+    private function with_order_lock( int $order_id, string $suffix, callable $fn, $default = 0 ) {
+        $name = $suffix . '_' . $order_id;
+        if ( ! $this->db_lock( $name, 10 ) ) {
+            return $default;
+        }
+        try {
+            return $fn();
+        } finally {
+            $this->db_unlock( $name );
+        }
     }
 
     /**
      * Add points and log ledger entry.
-     * Uses transient-based locking to prevent race conditions.
+     *
+     * Serializes the read-modify-write of the user balance with a MySQL named lock
+     * (cross-process) plus a best-effort object-cache lock, preventing lost updates
+     * and duplicate awards under concurrent requests.
      */
     public function add_points( int $user_id, int $amount, string $type, array $data ): Points_Ledger {
         // Use atomic cache-based locking to prevent concurrent updates (race condition protection).
@@ -685,15 +1014,29 @@ class Points_Service {
         // Also set transient as backup for cross-request persistence (if object cache is not persistent).
         set_transient( $lock_key, time(), 10 );
 
+        // Authoritative cross-process lock: serializes the balance read-modify-write
+        // across separate PHP requests even without a persistent object cache. Fail
+        // closed (like the cache-lock timeout above) so the balance is never updated
+        // without serialization, which is exactly when a double-award would occur.
+        $db_locked = $this->db_lock( 'points_' . $user_id, $lock_timeout );
+        if ( ! $db_locked ) {
+            wp_cache_delete( $lock_key, '' );
+            delete_transient( $lock_key );
+            throw new \RuntimeException( 'WCLR: Unable to acquire DB lock for points update. User ID: ' . $user_id );
+        }
+
         try {
             $balance          = $this->get_user_balance( $user_id );
             $new_balance      = $balance->balance + $amount;
             $new_lifetime     = $balance->lifetime_points;
+            $ctx = $data['context'] ?? '';
             if ( $type === 'earn' && $amount > 0 ) {
                 $new_lifetime += $amount;
             }
-            if ( $type === 'adjustment' && $amount > 0 ) {
-                $new_lifetime += $amount; // Count positive admin adjustments toward lifetime.
+            // Count positive admin adjustments toward lifetime, but not system-generated
+            // refund reversals/restorations (those must not inflate tier progress).
+            if ( $type === 'adjustment' && $amount > 0 && 'redeem_refund' !== $ctx && 'order_refund_reversal' !== $ctx ) {
+                $new_lifetime += $amount;
             }
 
             $old_tier = null;
@@ -783,7 +1126,10 @@ class Points_Service {
                 ]
             );
         } finally {
-            // Always release lock (both cache and transient).
+            // Always release lock (DB lock, cache and transient).
+            if ( $db_locked ) {
+                $this->db_unlock( 'points_' . $user_id );
+            }
             if ( $lock_acquired ) {
                 wp_cache_delete( $lock_key, '' );
                 delete_transient( $lock_key );

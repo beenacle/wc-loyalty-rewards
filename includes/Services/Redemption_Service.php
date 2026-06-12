@@ -26,6 +26,14 @@ class Redemption_Service {
         add_action( 'wp', [ $this, 'maybe_capture_redeem_request' ] );
         add_action( 'woocommerce_review_order_before_payment', [ $this, 'render_checkout_ui' ] );
         add_action( 'woocommerce_before_cart_totals', [ $this, 'render_cart_ui' ] );
+        // Persist the intended redemption durably on the order at creation, so the
+        // points deduction no longer depends on the customer's session/thankyou page.
+        add_action( 'woocommerce_checkout_create_order', [ $this, 'persist_redeem_on_order' ], 20, 2 );
+        add_action( 'woocommerce_store_api_checkout_update_order_from_request', [ $this, 'persist_redeem_on_order' ], 20, 2 );
+        // Finalize the deduction from server-side, idempotent hooks (reads order meta,
+        // not the session) so off-site/async gateways and webhooks still record the spend.
+        add_action( 'woocommerce_payment_complete', [ $this, 'finalize_redemption_by_order_id' ], 20, 1 );
+        add_action( 'woocommerce_order_status_changed', [ $this, 'finalize_redemption_on_status_change' ], 20, 4 );
         add_action( 'woocommerce_thankyou', [ $this, 'finalize_redemption_on_order' ], 20, 1 );
         add_filter( 'woocommerce_update_order_review_fragments', [ $this, 'filter_checkout_fragments' ] );
         add_filter( 'woocommerce_add_to_cart_fragments', [ $this, 'filter_cart_fragments' ] );
@@ -396,17 +404,103 @@ class Redemption_Service {
     }
 
     /**
-     * Finalize redemption when order completes.
+     * Persist the intended redemption onto the order at creation.
+     *
+     * Captures the session redemption amount as durable order meta so the points
+     * deduction can be finalized later from a server-side hook even if the customer
+     * never lands on the thankyou page (off-site gateway, webhook, lost session).
+     *
+     * @param WC_Order $order Order being created.
+     * @param mixed    $data  Posted checkout data / request (unused).
      */
-    public function finalize_redemption_on_order( int $order_id ): void {
-        $order  = wc_get_order( $order_id );
-        $user_id = $order ? $order->get_user_id() : 0;
-        if ( ! $order || ! $user_id ) {
+    public function persist_redeem_on_order( $order, $data = null ): void { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter
+        if ( ! $order instanceof WC_Order ) {
+            return;
+        }
+        if ( ! WC()->session ) {
             return;
         }
         $points = (int) WC()->session->get( 'wclr_points_to_redeem', 0 );
         if ( $points > 0 ) {
-            $this->points->redeem_points_for_order( $order, $points );
+            $order->update_meta_data( '_wclr_pending_redeem_points', $points );
+        }
+    }
+
+    /**
+     * Finalize redemption from an order id (server-side, e.g. payment complete).
+     *
+     * @param int $order_id Order ID.
+     */
+    public function finalize_redemption_by_order_id( int $order_id ): void {
+        $order = wc_get_order( $order_id );
+        if ( $order instanceof WC_Order ) {
+            $this->finalize_order_redemption( $order );
+        }
+    }
+
+    /**
+     * Finalize redemption when an order transitions into a paid status.
+     *
+     * @param int    $order_id   Order ID.
+     * @param string $old_status Previous status.
+     * @param string $new_status New status.
+     * @param mixed  $order      Order object.
+     */
+    public function finalize_redemption_on_status_change( $order_id, string $old_status, string $new_status, $order ): void { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter
+        $paid_statuses = function_exists( 'wc_get_is_paid_statuses' ) ? wc_get_is_paid_statuses() : [ 'processing', 'completed' ];
+        if ( ! in_array( $new_status, (array) $paid_statuses, true ) ) {
+            return;
+        }
+        if ( ! $order instanceof WC_Order ) {
+            $order = wc_get_order( $order_id );
+        }
+        if ( $order instanceof WC_Order ) {
+            $this->finalize_order_redemption( $order );
+        }
+    }
+
+    /**
+     * Finalize redemption when order completes (thankyou page fallback).
+     *
+     * @param int $order_id Order ID.
+     */
+    public function finalize_redemption_on_order( int $order_id ): void {
+        $order = wc_get_order( $order_id );
+        if ( $order instanceof WC_Order ) {
+            $this->finalize_order_redemption( $order );
+        }
+    }
+
+    /**
+     * Record the points spend for an order's redemption.
+     *
+     * Prefers the durable order meta written at checkout; falls back to the session
+     * for legacy in-session completions. redeem_points_for_order() is idempotent
+     * (guards on _wclr_points_redeemed), so calling this from several hooks is safe.
+     *
+     * @param WC_Order $order Order.
+     */
+    private function finalize_order_redemption( WC_Order $order ): void {
+        if ( ! $order->get_user_id() ) {
+            return;
+        }
+        // Already finalized for this order.
+        if ( $order->get_meta( '_wclr_points_redeemed', true ) ) {
+            return;
+        }
+
+        $points = (int) $order->get_meta( '_wclr_pending_redeem_points', true );
+        if ( $points <= 0 && WC()->session ) {
+            // Legacy fallback for orders created before this field existed.
+            $points = (int) WC()->session->get( 'wclr_points_to_redeem', 0 );
+        }
+        if ( $points <= 0 ) {
+            return;
+        }
+
+        $this->points->redeem_points_for_order( $order, $points );
+
+        if ( WC()->session ) {
             WC()->session->__unset( 'wclr_points_to_redeem' );
             WC()->session->__unset( 'wclr_manual_override' );
         }

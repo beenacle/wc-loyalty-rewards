@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.1
+Security/integrity release — closes several points-leak loopholes.
+- Fixed: **Anniversary bonus could be paid twice for one membership year.** Deduplication now tracks the membership-anniversary ordinal (full years since registration) instead of the calendar year, and never pays an anniversary for an account younger than one year (defence in depth even if the cron date-guard is bypassed). Leap-year (Feb 29 → Feb 28) handling preserved.
+- Fixed: **Redeemed points were not always deducted.** The redemption discount is now persisted to the order at checkout (`_wclr_pending_redeem_points`) and the spend is finalized from server-side, idempotent hooks (`woocommerce_payment_complete`, status → paid) instead of relying solely on the session-dependent `woocommerce_thankyou` page. Prevents customers keeping both the discount and the points on off-site/async-gateway checkouts.
+- Fixed: **Earned points were never reversed on refund/cancel.** `order_earning.refund_behavior` and `redemption.return_on_refund` now actually take effect: earned points are reversed and redeemed points restored when an order moves to `cancelled`/`refunded` (idempotent, and excluded from lifetime/tier totals).
+- Fixed: **Order points could be double-awarded** under concurrent status-change events (bulk edits, gateway IPN retries, integrations). The earn guard is now re-checked atomically under a per-order lock.
+- Fixed: **Balance lost-updates / duplicate awards** when no persistent object cache is present. `add_points()` now serializes the balance read-modify-write with a cross-process MySQL named lock (`GET_LOCK`) in addition to the object-cache lock.
+- Fixed: **Signup bonus could be re-claimed by deleting and re-registering an account.** Added a durable, email-hash signup guard recorded in the ledger that survives account deletion.
+
 ## 1.1.0
 - New: Admin **Analytics dashboard** under Loyalty & Rewards → Analytics.
   - KPI cards: points issued, points redeemed, redemption rate, active members, avg points/order, outstanding balance, liability value (in store currency).
