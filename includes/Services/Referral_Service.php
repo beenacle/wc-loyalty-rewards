@@ -64,7 +64,13 @@ class Referral_Service {
         $code     = sanitize_text_field( wp_unslash( $_COOKIE['wclr_ref'] ) ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
         $referrer = $this->get_user_by_code( $code );
         if ( $referrer ) {
-            update_post_meta( $order_id, '_wclr_referrer_id', $referrer );
+            // Write via the order object so attribution is stored in the correct
+            // place under HPOS (the order is read back with $order->get_meta()).
+            $order = wc_get_order( $order_id );
+            if ( $order ) {
+                $order->update_meta_data( '_wclr_referrer_id', $referrer );
+                $order->save();
+            }
         }
     }
 
@@ -103,8 +109,10 @@ class Referral_Service {
             return;
         }
 
-        // Prevent self-referral.
-        if ( $referrer_id === $user_id ) {
+        // Prevent self-referral, including a second account opened by the same person
+        // (matched on normalized account/billing email, which defeats the gmail
+        // dot/+alias trick used to farm referral bonuses).
+        if ( $this->is_self_referral( $referrer_id, $user_id, $order ) ) {
             return;
         }
 
@@ -164,6 +172,65 @@ class Referral_Service {
     }
 
     /**
+     * Detect a self-referral, including a second account opened by the same person.
+     *
+     * Blocks when the referrer and referred are the same user id, or when their
+     * normalized emails match (referrer account email vs the referred account email
+     * and, when available, the order's billing email).
+     *
+     * @param int           $referrer_id Referrer user id.
+     * @param int           $referred_id Referred user id.
+     * @param WC_Order|null $order       Referred user's order (optional).
+     * @return bool
+     */
+    private function is_self_referral( int $referrer_id, int $referred_id, ?WC_Order $order = null ): bool {
+        if ( $referrer_id === $referred_id ) {
+            return true;
+        }
+        $referrer = get_userdata( $referrer_id );
+        if ( ! $referrer || empty( $referrer->user_email ) ) {
+            return false;
+        }
+        $ref_email = $this->normalize_email( (string) $referrer->user_email );
+        if ( '' === $ref_email ) {
+            return false;
+        }
+
+        $candidates = [];
+        $referred   = get_userdata( $referred_id );
+        if ( $referred && ! empty( $referred->user_email ) ) {
+            $candidates[] = $this->normalize_email( (string) $referred->user_email );
+        }
+        if ( $order instanceof WC_Order && $order->get_billing_email() ) {
+            $candidates[] = $this->normalize_email( (string) $order->get_billing_email() );
+        }
+
+        return in_array( $ref_email, array_filter( $candidates ), true );
+    }
+
+    /**
+     * Normalize an email for same-person comparison.
+     *
+     * Lowercases and trims, and for Gmail/Googlemail removes dots and any +alias in
+     * the local part (which all deliver to the same inbox).
+     */
+    private function normalize_email( string $email ): string {
+        $email = strtolower( trim( $email ) );
+        if ( '' === $email || false === strpos( $email, '@' ) ) {
+            return $email;
+        }
+        list( $local, $domain ) = explode( '@', $email, 2 );
+        $plus = strpos( $local, '+' );
+        if ( false !== $plus ) {
+            $local = substr( $local, 0, $plus );
+        }
+        if ( in_array( $domain, [ 'gmail.com', 'googlemail.com' ], true ) ) {
+            $local = str_replace( '.', '', $local );
+        }
+        return $local . '@' . $domain;
+    }
+
+    /**
      * Get user id by referral code.
      */
     public function get_user_by_code( string $code ): ?int {
@@ -205,8 +272,8 @@ class Referral_Service {
         if ( ! $referrer_id ) {
             return;
         }
-        if ( $referrer_id === $user_id ) {
-            return; // Block self-referral on signup.
+        if ( $this->is_self_referral( $referrer_id, $user_id ) ) {
+            return; // Block self-referral on signup (same id or same person's email).
         }
 
         $settings = Settings_Cache::get();

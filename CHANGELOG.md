@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.2
+Follow-up hardening of secondary earning paths.
+- Fixed: **Self-referral via a second account.** Referral rewards are now blocked when the referrer and the referred customer are the same person, matched on normalized account/billing email (Gmail dot/`+alias` variants are collapsed), in addition to the existing same-user-id check — at both signup and reward time.
+- Fixed: **Referral attribution lost under HPOS.** The `?ref=` checkout cookie wrote the referrer to legacy post meta but it was read back via the order object, so cookie-based attribution never resolved. It is now written through the order object (HPOS-correct).
+- Fixed: **Birthday bonus could be claimed with no real birthday.** The birthday parser no longer accepts relative/textual values such as `today`/`now` (which `strtotime()` resolved to the cron-run day); only strict numeric dates are honored.
+- Fixed: **Admin/manual point adjustments no longer count toward lifetime points** (and therefore tiers). Lifetime now reflects earned points only, consistent with the "Recalculate Lifetime Points" utility. Run that utility once if you want existing balances trued up.
+
 ## 1.1.1
 Security/integrity release — closes several points-leak loopholes.
 - Fixed: **Anniversary bonus could be paid twice for one membership year.** Deduplication now tracks the membership-anniversary ordinal (full years since registration) instead of the calendar year, and never pays an anniversary for an account younger than one year (defence in depth even if the cron date-guard is bypassed). Leap-year (Feb 29 → Feb 28) handling preserved.

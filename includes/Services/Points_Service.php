@@ -691,6 +691,14 @@ class Points_Service {
             }
         }
 
+        // Reject relative/textual values (e.g. "today", "now", "+0 days", "next monday").
+        // strtotime() would resolve these to the current date, which would always match
+        // the cron-run day and hand a birthday bonus to someone with no real birthday set.
+        // Only strictly numeric date strings are allowed past this point.
+        if ( preg_match( '/[A-Za-z]/', $value ) ) {
+            return null;
+        }
+
         $timestamp = strtotime( $value );
         if ( false === $timestamp ) {
             return null;
@@ -1029,13 +1037,11 @@ class Points_Service {
             $balance          = $this->get_user_balance( $user_id );
             $new_balance      = $balance->balance + $amount;
             $new_lifetime     = $balance->lifetime_points;
-            $ctx = $data['context'] ?? '';
+            // Lifetime counts EARNED points only (matches recalc_lifetime_points_all).
+            // Admin/manual adjustments and system refund reversals/restorations are
+            // deliberately excluded so they cannot inflate tier eligibility with
+            // points the customer did not earn.
             if ( $type === 'earn' && $amount > 0 ) {
-                $new_lifetime += $amount;
-            }
-            // Count positive admin adjustments toward lifetime, but not system-generated
-            // refund reversals/restorations (those must not inflate tier progress).
-            if ( $type === 'adjustment' && $amount > 0 && 'redeem_refund' !== $ctx && 'order_refund_reversal' !== $ctx ) {
                 $new_lifetime += $amount;
             }
 
