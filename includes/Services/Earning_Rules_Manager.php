@@ -28,6 +28,9 @@ class Earning_Rules_Manager {
         // Partial (and full) refunds fire here with the refunded amount available on
         // the order; used to prorate earned points when refund_behavior = prorate.
         add_action( 'woocommerce_order_refunded', [ $this, 'handle_partial_refund' ], 20, 2 );
+        // Deleting/reducing a refund lowers the refunded share, so re-reconcile to give
+        // back any over-reversed points (prorate only).
+        add_action( 'woocommerce_refund_deleted', [ $this, 'handle_refund_deleted' ], 20, 2 );
         add_action( 'user_register', [ $this, 'handle_signup_bonus' ] );
         add_action( 'wp', [ $this, 'handle_daily_visit' ] );
         add_action( 'init', [ $this, 'capture_ref_param' ] );
@@ -93,6 +96,29 @@ class Earning_Rules_Manager {
         $settings = Settings_Cache::get();
         $behavior = $settings['order_earning']['refund_behavior'] ?? 'reverse';
         // 'reverse' acts only on the full-refund status transition; 'ignore' is a no-op.
+        if ( 'prorate' !== $behavior ) {
+            return;
+        }
+        $order = wc_get_order( $order_id );
+        if ( $order ) {
+            $this->points->prorate_order_earnings( $order );
+        }
+    }
+
+    /**
+     * Re-reconcile earned points after a refund is deleted or reduced (prorate only).
+     *
+     * woocommerce_order_refunded fires on refund creation, never on deletion, so without
+     * this the cumulative clawback could never shrink when a refunded order is corrected.
+     * prorate_order_earnings() now restores the over-reversed share on a lowered refunded
+     * proportion, so simply re-running it here gives the points (and lifetime) back.
+     *
+     * @param int $refund_id Refund ID (unused).
+     * @param int $order_id  Order ID.
+     */
+    public function handle_refund_deleted( $refund_id, $order_id ): void { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter
+        $settings = Settings_Cache::get();
+        $behavior = $settings['order_earning']['refund_behavior'] ?? 'reverse';
         if ( 'prorate' !== $behavior ) {
             return;
         }
