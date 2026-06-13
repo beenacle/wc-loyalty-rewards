@@ -896,12 +896,15 @@ class Points_Service {
      * Prorate earned points to the refunded share of an order.
      *
      * Used when order_earning.refund_behavior = prorate. Reconciles the cumulative
-     * reversed total (tracked in _wclr_points_earn_reversed) to the proportion of
-     * the order total that has been refunded, so repeated partial refunds each claw
-     * back only the incremental amount. Balance and lifetime are both reduced.
+     * reversed total (tracked in _wclr_points_earn_reversed) to the refunded share of
+     * the SAME monetary base points were earned on (item subtotal net of coupons, plus
+     * tax/shipping only when those earning settings are enabled), so repeated partial
+     * refunds each claw back only the incremental amount. The reconciliation is
+     * two-directional: if a refund is later reduced or deleted, the over-reversed share
+     * is restored. Balance and lifetime move together in both directions.
      *
      * @param WC_Order $order Refunded order.
-     * @return int Points reversed by this call.
+     * @return int Points reversed (positive) or restored (negative) by this call.
      */
     public function prorate_order_earnings( WC_Order $order ): int {
         $user_id = $order->get_user_id();
@@ -921,28 +924,79 @@ class Points_Service {
                     return 0;
                 }
 
-                $order_total = (float) $target->get_total();
-                if ( $order_total <= 0 ) {
+                // Prorate against the SAME monetary base points were earned on, not the
+                // gross order total. earn_for_order() earns on the item subtotal (net of
+                // coupons), including tax/shipping only when the order_earning settings
+                // opt in. Using get_total()/get_total_refunded() would fold in shipping
+                // and tax the award may have excluded, so a shipping-only refund would
+                // wrongly claw back item points (and an item-only refund would under-claw).
+                $settings         = Settings_Cache::get();
+                $include_tax      = ! empty( $settings['order_earning']['include_tax'] );
+                $include_shipping = ! empty( $settings['order_earning']['include_shipping'] );
+
+                // Original earning-relevant base (post coupon discount).
+                $orig = (float) $target->get_subtotal() - (float) $target->get_total_discount();
+                if ( $include_tax ) {
+                    $orig += (float) $target->get_total_tax() - (float) $target->get_discount_tax();
+                }
+                if ( $include_shipping ) {
+                    $orig += (float) $target->get_shipping_total();
+                }
+                if ( $orig <= 0 ) {
                     return 0;
                 }
-                $refunded   = (float) $target->get_total_refunded();
-                $proportion = min( 1.0, max( 0.0, $refunded / $order_total ) );
+
+                // Refunded portion of that same base. Per-item refunds are already net
+                // of line discounts; tax/shipping refunds count only when earned on.
+                $refunded_base = 0.0;
+                foreach ( $target->get_items() as $item_id => $item ) {
+                    $refunded_base += (float) $target->get_total_refunded_for_item( $item_id );
+                }
+                if ( $include_tax ) {
+                    $refunded_base += (float) $target->get_total_tax_refunded();
+                }
+                if ( $include_shipping ) {
+                    $refunded_base += (float) $target->get_total_shipping_refunded();
+                }
+
+                $proportion = min( 1.0, max( 0.0, $refunded_base / $orig ) );
 
                 // Total points that should be reversed given the refunded share.
                 $target_reversed = (int) floor( $awarded * $proportion );
                 $already         = (int) $target->get_meta( '_wclr_points_earn_reversed', true );
                 $delta           = $target_reversed - $already;
-                if ( $delta <= 0 ) {
+                if ( 0 === $delta ) {
                     return 0;
                 }
 
-                // Never drive the balance negative; record only what we can claw back.
-                $balance = $this->get_user_balance( $user_id )->balance;
-                $reverse = (int) min( $delta, max( 0, $balance ) );
-                if ( $reverse > 0 ) {
+                if ( $delta > 0 ) {
+                    // More of the order is now refunded: claw back the increment, but
+                    // never drive the balance negative (record only what we can take).
+                    $balance = $this->get_user_balance( $user_id )->balance;
+                    $reverse = (int) min( $delta, max( 0, $balance ) );
+                    if ( $reverse > 0 ) {
+                        $this->add_points(
+                            $user_id,
+                            -1 * $reverse,
+                            'adjustment',
+                            [
+                                'context'  => 'order_refund_reversal',
+                                'order_id' => $order_id,
+                            ]
+                        );
+                    }
+                    $target->update_meta_data( '_wclr_points_earn_reversed', $already + $reverse );
+                    $target->save();
+                    return $reverse;
+                }
+
+                // A refund was reduced or deleted: give the over-reversed share back so
+                // balance and lifetime track the refunded proportion in both directions.
+                $restore = (int) min( -$delta, $already );
+                if ( $restore > 0 ) {
                     $this->add_points(
                         $user_id,
-                        -1 * $reverse,
+                        $restore,
                         'adjustment',
                         [
                             'context'  => 'order_refund_reversal',
@@ -950,10 +1004,9 @@ class Points_Service {
                         ]
                     );
                 }
-
-                $target->update_meta_data( '_wclr_points_earn_reversed', $already + $reverse );
+                $target->update_meta_data( '_wclr_points_earn_reversed', max( 0, $already - $restore ) );
                 $target->save();
-                return $reverse;
+                return -1 * $restore;
             },
             0
         );
@@ -1126,13 +1179,16 @@ class Points_Service {
             $new_lifetime     = $balance->lifetime_points;
             // Lifetime tracks net EARNED points (matches recalc_lifetime_points_all):
             // positive 'earn' rows add to it, and refund/cancel reversals of earned
-            // order points subtract from it, so a refunded sale no longer keeps a
-            // customer's tier eligibility inflated. Admin/manual adjustments and
-            // redemption-refund restorations are deliberately excluded so they can
-            // neither inflate nor deflate tiers with points the customer did not earn.
+            // order points net against it, so a refunded sale no longer keeps a
+            // customer's tier eligibility inflated. 'order_refund_reversal' rows move it
+            // in both directions: a clawback (negative) subtracts, and restoring a
+            // reduced/deleted refund (positive, same context) adds the points back.
+            // Admin/manual adjustments and redemption-refund restorations are
+            // deliberately excluded so they can neither inflate nor deflate tiers with
+            // points the customer did not earn.
             if ( 'earn' === $type && $amount > 0 ) {
                 $new_lifetime += $amount;
-            } elseif ( 'adjustment' === $type && $amount < 0 && 'order_refund_reversal' === ( $data['context'] ?? '' ) ) {
+            } elseif ( 'adjustment' === $type && 'order_refund_reversal' === ( $data['context'] ?? '' ) ) {
                 $new_lifetime = max( 0, $new_lifetime + $amount );
             }
 
@@ -1300,14 +1356,15 @@ class Points_Service {
     public function recalc_lifetime_points_all(): int {
         global $wpdb;
         $table   = $wpdb->prefix . 'wclr_points_ledger';
-        // Net earned = positive 'earn' rows minus refund/cancel reversals of earned
-        // order points. Mirrors the live lifetime accounting in add_points().
+        // Net earned = positive 'earn' rows plus the net of refund/cancel reversal rows
+        // (negative clawbacks and positive restorations of earned order points).
+        // Mirrors the live lifetime accounting in add_points().
         $results = $wpdb->get_results( // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
             $wpdb->prepare(
                 "SELECT user_id, SUM(
                         CASE
                             WHEN type = 'earn' AND amount > 0 THEN amount
-                            WHEN type = 'adjustment' AND amount < 0 AND context = %s THEN amount
+                            WHEN type = 'adjustment' AND context = %s THEN amount
                             ELSE 0
                         END
                     ) AS total
