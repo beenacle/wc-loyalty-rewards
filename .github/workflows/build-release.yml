@@ -32,10 +32,19 @@ jobs:
         with:
           ref: ${{ steps.tag.outputs.tag }}
 
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.0'
+          tools: composer:v2
+
+      - name: Install production dependencies
+        run: composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
+
       - name: Build plugin zip
         run: |
           mkdir -p build/wc-loyalty-rewards
-          rsync -a --exclude='.git' --exclude='.github' --exclude='composer.phar' --exclude='*.log' ./ build/wc-loyalty-rewards/
+          rsync -a --exclude='.git' --exclude='.github' --exclude='composer.phar' --exclude='composer.json' --exclude='composer.lock' --exclude='*.log' ./ build/wc-loyalty-rewards/
           cd build && zip -rq wc-loyalty-rewards.zip wc-loyalty-rewards/
 
       - name: Create or update release

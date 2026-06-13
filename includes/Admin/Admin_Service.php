@@ -1477,7 +1477,7 @@ class Admin_Service {
                 $output,
                 [
                     $user->ID,
-                    $user->user_email,
+                    $this->csv_safe( $user->user_email ),
                     $balance,
                     $lifetime,
                 ]
@@ -1486,6 +1486,24 @@ class Admin_Service {
 
         fclose( $output );
         exit;
+    }
+
+    /**
+     * Neutralize CSV/formula injection.
+     *
+     * A cell that begins with =, +, -, @, TAB or CR can be executed as a formula
+     * when the CSV is opened in spreadsheet software. Prefix such values with a
+     * single quote so they are treated as literal text.
+     *
+     * @param mixed $value Raw cell value.
+     * @return string Safe cell value.
+     */
+    private function csv_safe( $value ): string {
+        $value = (string) $value;
+        if ( '' !== $value && in_array( $value[0], [ '=', '+', '-', '@', "\t", "\r" ], true ) ) {
+            return "'" . $value;
+        }
+        return $value;
     }
 
     /**
@@ -1551,21 +1569,34 @@ class Admin_Service {
             exit;
         }
 
-        // Read header and map columns (case-insensitive).
-        $header = fgetcsv( $handle );
-        $header = is_array( $header ) ? array_map( 'strtolower', $header ) : [];
+        // Read the first line and decide whether it is a header (case-insensitive).
+        $first        = fgetcsv( $handle );
+        $first        = is_array( $first ) ? $first : [];
+        $header_lower = array_map( 'strtolower', array_map( 'trim', $first ) );
 
-        $col_user_id   = array_search( 'user_id', $header, true );
-        $col_email     = array_search( 'user_email', $header, true );
-        $col_balance   = array_search( 'points_balance', $header, true );
-        $col_lifetime  = array_search( 'lifetime_points', $header, true );
+        $col_user_id   = array_search( 'user_id', $header_lower, true );
+        $col_email     = array_search( 'user_email', $header_lower, true );
+        $col_balance   = array_search( 'points_balance', $header_lower, true );
+        $col_lifetime  = array_search( 'lifetime_points', $header_lower, true );
 
         // Fallback for simple 2/3/4-column CSV without headers.
-        $has_header = ! empty( $header ) && false !== $col_user_id;
+        $has_header = false !== $col_user_id;
+        // With no header row, the first line is already data, so process it too
+        // instead of silently discarding the first record.
+        $pending    = $has_header ? null : $first;
         $imported   = 0;
         $skipped    = 0;
 
-        while ( ( $row = fgetcsv( $handle ) ) !== false ) {
+        while ( true ) {
+            if ( null !== $pending ) {
+                $row     = $pending;
+                $pending = null;
+            } else {
+                $row = fgetcsv( $handle );
+                if ( false === $row ) {
+                    break;
+                }
+            }
             if ( empty( $row ) ) {
                 continue;
             }

@@ -34,7 +34,9 @@ $meta_keys = [
     '_wclr_weekly_logins', // Legacy - keep for cleanup of old data.
     '_wclr_weekly_rewarded', // Legacy - keep for cleanup of old data.
     '_wclr_anniversary_year',
+    '_wclr_anniversary_last_ordinal',
     '_wclr_birthday_year',
+    '_wclr_referral_rewarded',
     '_wclr_pending_reward_notice',
 ];
 

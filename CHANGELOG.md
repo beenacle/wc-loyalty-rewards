@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.3
+Refund accounting, redemption safety, packaging, and block-checkout fixes.
+- Fixed: **Auto-update was silently disabled in released builds.** The GitHub update checker requires `vendor/`, but the release workflow never ran `composer install`, so distributed ZIPs shipped without it. CI now installs production dependencies (and a committed `composer.lock` pins them) before packaging.
+- Fixed: **"Prorate on partial refund" did nothing, and partial refunds never adjusted points.** Reversal only ran on a full status change to `refunded`/`cancelled`. Partial (and full) refunds now reconcile earned points to the refunded share of the order via `woocommerce_order_refunded` when `refund_behavior = prorate`; repeated partial refunds each claw back only the incremental amount.
+- Changed: **Refund/cancel reversals now reduce lifetime points (and therefore tier eligibility).** Previously lifetime never decreased, so a fully refunded order could keep a customer's tier multiplier inflated forever. `Recalculate Lifetime Points` now nets out refund reversals to match. (Admin/manual adjustments and redemption-refund restorations remain excluded from lifetime.)
+- Fixed: **Point redemption could exceed the order's value.** The discount is now hard-capped at the cart total after coupons (in addition to the optional `max_percent` cap), so the order total can no longer be driven negative when `max_percent = 0`.
+- Fixed: **Referral attribution was lost on the block/Store API checkout.** The `?ref=` cookie is now also captured through `woocommerce_store_api_checkout_update_order_from_request`, not just the legacy classic-checkout hook.
+- Fixed: **CSV export formula/injection.** Exported cells beginning with `=`, `+`, `-`, `@`, TAB, or CR are now prefixed so spreadsheet apps treat them as text.
+- Fixed: **CSV import dropped the first record when the file had no header row** (the data line was consumed as the header).
+- Fixed: **Uninstall left orphaned user meta** (`_wclr_anniversary_last_ordinal`, `_wclr_referral_rewarded`) when "Delete data on uninstall" was enabled.
+- Misc: removed a deprecated `current_time('timestamp')` call in the flash-multiplier window check (now timezone-correct) and corrected a misleading lock-timeout comment.
+
 ## 1.1.2
 Follow-up hardening of secondary earning paths.
 - Fixed: **Self-referral via a second account.** Referral rewards are now blocked when the referrer and the referred customer are the same person, matched on normalized account/billing email (Gmail dot/`+alias` variants are collapsed), in addition to the existing same-user-id check — at both signup and reward time.

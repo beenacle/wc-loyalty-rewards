@@ -25,6 +25,9 @@ class Referral_Service {
     public function register(): void {
         add_action( 'user_register', [ $this, 'assign_referral_code' ] );
         add_action( 'woocommerce_checkout_update_order_meta', [ $this, 'attach_referrer_meta' ], 10, 2 );
+        // Block / Store API checkout does not fire the legacy meta hook above, so
+        // the ?ref cookie has to be captured through the Store API order hook too.
+        add_action( 'woocommerce_store_api_checkout_update_order_from_request', [ $this, 'attach_referrer_meta_blocks' ], 10, 2 );
         add_action( 'woocommerce_order_status_completed', [ $this, 'maybe_reward_referral' ], 20, 1 );
     }
 
@@ -58,19 +61,46 @@ class Referral_Service {
      * Capture ref parameter during checkout and store in order meta.
      */
     public function attach_referrer_meta( int $order_id, array $data ): void { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter
+        $order = wc_get_order( $order_id );
+        if ( $order ) {
+            $this->attach_referrer_from_cookie( $order, true );
+        }
+    }
+
+    /**
+     * Capture the ?ref cookie during block / Store API checkout.
+     *
+     * @param mixed $order   Order being created (WC_Order under the Store API).
+     * @param mixed $request Store API request (unused).
+     */
+    public function attach_referrer_meta_blocks( $order, $request = null ): void { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter
+        if ( $order instanceof WC_Order ) {
+            // The Store API persists the order after this hook, so no explicit save.
+            $this->attach_referrer_from_cookie( $order, false );
+        }
+    }
+
+    /**
+     * Store the cookie referrer on an order (HPOS-correct: written through the order
+     * object so it is read back with $order->get_meta()). Shared by the legacy and
+     * Store API checkout hooks.
+     *
+     * @param WC_Order $order Order to attribute.
+     * @param bool     $save  Whether to persist immediately (legacy checkout) or let
+     *                        the caller/core save it (Store API).
+     */
+    private function attach_referrer_from_cookie( WC_Order $order, bool $save ): void {
         if ( empty( $_COOKIE['wclr_ref'] ) ) { // phpcs:ignore WordPressVIPMinimum.Variables.RestrictedVariables
             return;
         }
         $code     = sanitize_text_field( wp_unslash( $_COOKIE['wclr_ref'] ) ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
         $referrer = $this->get_user_by_code( $code );
-        if ( $referrer ) {
-            // Write via the order object so attribution is stored in the correct
-            // place under HPOS (the order is read back with $order->get_meta()).
-            $order = wc_get_order( $order_id );
-            if ( $order ) {
-                $order->update_meta_data( '_wclr_referrer_id', $referrer );
-                $order->save();
-            }
+        if ( ! $referrer ) {
+            return;
+        }
+        $order->update_meta_data( '_wclr_referrer_id', $referrer );
+        if ( $save ) {
+            $order->save();
         }
     }
 
