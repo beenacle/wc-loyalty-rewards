@@ -25,6 +25,9 @@ class Earning_Rules_Manager {
     public function register(): void {
         add_action( 'woocommerce_order_status_changed', [ $this, 'handle_order_status_changed' ], 20, 4 );
         add_action( 'woocommerce_order_status_changed', [ $this, 'handle_order_reversal' ], 20, 4 );
+        // Partial (and full) refunds fire here with the refunded amount available on
+        // the order; used to prorate earned points when refund_behavior = prorate.
+        add_action( 'woocommerce_order_refunded', [ $this, 'handle_partial_refund' ], 20, 2 );
         add_action( 'user_register', [ $this, 'handle_signup_bonus' ] );
         add_action( 'wp', [ $this, 'handle_daily_visit' ] );
         add_action( 'init', [ $this, 'capture_ref_param' ] );
@@ -34,6 +37,14 @@ class Earning_Rules_Manager {
     /**
      * Reverse earned points (and optionally restore redeemed points) when an order
      * is cancelled or refunded, so refunded sales do not keep inflating balances.
+     *
+     * Behavior honors the order_earning.refund_behavior setting:
+     *  - ignore : never touch earned points.
+     *  - reverse: fully reverse earned points on cancellation or full refund.
+     *  - prorate: cancellation fully reverses; refunds are reconciled to the
+     *             refunded proportion (handled here for the full-refund status
+     *             transition, and via {@see self::handle_partial_refund()} for
+     *             partial refunds).
      *
      * @param int      $order_id   Order ID.
      * @param string   $old_status Previous status.
@@ -50,8 +61,45 @@ class Earning_Rules_Manager {
         if ( ! $order ) {
             return;
         }
-        $this->points->reverse_order_earnings( $order );
+
+        $settings = Settings_Cache::get();
+        $behavior = $settings['order_earning']['refund_behavior'] ?? 'reverse';
+
+        if ( 'ignore' !== $behavior ) {
+            if ( 'cancelled' === $new_status ) {
+                // A cancelled order is voided in full: claw back everything earned.
+                $this->points->reverse_order_earnings( $order );
+            } elseif ( 'prorate' === $behavior ) {
+                // Full refund under prorate => reconcile to the refunded proportion.
+                $this->points->prorate_order_earnings( $order );
+            } else {
+                $this->points->reverse_order_earnings( $order );
+            }
+        }
+
         $this->points->restore_redeemed_points( $order );
+    }
+
+    /**
+     * Prorate earned points on a (partial or full) refund when refund_behavior =
+     * prorate. Idempotent: reconciles the cumulative reversed total to the share of
+     * the order that has been refunded, so repeated refunds each claw back only the
+     * incremental amount.
+     *
+     * @param int $order_id  Order ID.
+     * @param int $refund_id Refund ID (unused).
+     */
+    public function handle_partial_refund( $order_id, $refund_id ): void { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter
+        $settings = Settings_Cache::get();
+        $behavior = $settings['order_earning']['refund_behavior'] ?? 'reverse';
+        // 'reverse' acts only on the full-refund status transition; 'ignore' is a no-op.
+        if ( 'prorate' !== $behavior ) {
+            return;
+        }
+        $order = wc_get_order( $order_id );
+        if ( $order ) {
+            $this->points->prorate_order_earnings( $order );
+        }
     }
 
     /**

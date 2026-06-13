@@ -381,14 +381,22 @@ class Redemption_Service {
 
         $discount = ( $points_to_redeem / $ratio_points ) * $ratio_value;
 
+        // Optional percentage cap (max_percent = 0 means no percentage cap).
         $max_percent = (float) ( $config['max_percent'] ?? 0 );
         if ( $max_percent > 0 ) {
             $max_discount = ( $cart->get_subtotal() ) * ( $max_percent / 100 );
             $discount     = min( $discount, $max_discount );
-            $points_to_redeem = (int) floor( $discount / $ratio_value * $ratio_points );
         }
 
-        if ( $discount <= 0 ) {
+        // Hard ceiling: the points discount can never exceed what the cart is worth
+        // after coupons, otherwise the order total could be driven negative.
+        $ceiling  = max( 0.0, (float) $cart->get_subtotal() - (float) $cart->get_discount_total() );
+        $discount = min( $discount, $ceiling );
+
+        // Re-derive the points actually consumed from the (possibly clamped) discount.
+        $points_to_redeem = (int) floor( $discount / $ratio_value * $ratio_points );
+
+        if ( $discount <= 0 || $points_to_redeem <= 0 ) {
             return;
         }
 

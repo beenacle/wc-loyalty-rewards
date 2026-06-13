@@ -327,6 +327,11 @@ class Points_Service {
                         $max_discount = $cart->get_subtotal() * ( $max_percent / 100 );
                         $redemption_discount = min( $redemption_discount, $max_discount );
                     }
+
+                    // Never redeem more than the cart is worth after coupons; mirrors
+                    // the hard ceiling enforced in Redemption_Service::apply_cart_discount().
+                    $ceiling = max( 0.0, (float) $cart->get_subtotal() - (float) $cart->get_discount_total() );
+                    $redemption_discount = min( $redemption_discount, $ceiling );
                 }
             }
         }
@@ -819,8 +824,10 @@ class Points_Service {
      * Reverse points earned for an order when it is refunded or cancelled.
      *
      * Honors the order_earning.refund_behavior setting (reverse|prorate|ignore).
-     * Idempotent via the _wclr_points_earn_reversed order flag. Balance is reduced;
-     * lifetime is intentionally left unchanged (lifetime = total ever earned).
+     * Idempotent via the _wclr_points_earn_reversed order flag, and composes with
+     * partial-refund proration (only the outstanding remainder is clawed back).
+     * Both balance and lifetime are reduced by the reversed amount so refunded
+     * sales no longer keep a customer's tier eligibility inflated.
      *
      * @param WC_Order $order Order leaving an earning status.
      * @return int Points reversed.
@@ -849,10 +856,20 @@ class Points_Service {
                     return 0;
                 }
 
+                // Account for any points already clawed back via partial-refund
+                // proration so we only reverse the outstanding remainder.
+                $already   = (int) $target->get_meta( '_wclr_points_earn_reversed', true );
+                $remaining = max( 0, $awarded - $already );
+                if ( $remaining <= 0 ) {
+                    $target->delete_meta_data( '_wclr_points_awarded' );
+                    $target->save();
+                    return 0;
+                }
+
                 // Do not drive the balance negative: only claw back what the user
                 // still holds. The actually-reversed amount is recorded for audit.
                 $balance = $this->get_user_balance( $user_id )->balance;
-                $reverse = (int) min( $awarded, max( 0, $balance ) );
+                $reverse = (int) min( $remaining, max( 0, $balance ) );
                 if ( $reverse > 0 ) {
                     $this->add_points(
                         $user_id,
@@ -865,9 +882,76 @@ class Points_Service {
                     );
                 }
 
-                $target->update_meta_data( '_wclr_points_earn_reversed', $reverse );
+                $target->update_meta_data( '_wclr_points_earn_reversed', $already + $reverse );
                 // Clear the award flag so reactivating the order can re-award once.
                 $target->delete_meta_data( '_wclr_points_awarded' );
+                $target->save();
+                return $reverse;
+            },
+            0
+        );
+    }
+
+    /**
+     * Prorate earned points to the refunded share of an order.
+     *
+     * Used when order_earning.refund_behavior = prorate. Reconciles the cumulative
+     * reversed total (tracked in _wclr_points_earn_reversed) to the proportion of
+     * the order total that has been refunded, so repeated partial refunds each claw
+     * back only the incremental amount. Balance and lifetime are both reduced.
+     *
+     * @param WC_Order $order Refunded order.
+     * @return int Points reversed by this call.
+     */
+    public function prorate_order_earnings( WC_Order $order ): int {
+        $user_id = $order->get_user_id();
+        if ( ! $user_id ) {
+            return 0;
+        }
+
+        $order_id = $order->get_id();
+        return (int) $this->with_order_lock(
+            $order_id,
+            'order_award',
+            function () use ( $order, $order_id, $user_id ) {
+                $fresh   = wc_get_order( $order_id );
+                $target  = $fresh ? $fresh : $order;
+                $awarded = (int) $target->get_meta( '_wclr_points_awarded', true );
+                if ( $awarded <= 0 ) {
+                    return 0;
+                }
+
+                $order_total = (float) $target->get_total();
+                if ( $order_total <= 0 ) {
+                    return 0;
+                }
+                $refunded   = (float) $target->get_total_refunded();
+                $proportion = min( 1.0, max( 0.0, $refunded / $order_total ) );
+
+                // Total points that should be reversed given the refunded share.
+                $target_reversed = (int) floor( $awarded * $proportion );
+                $already         = (int) $target->get_meta( '_wclr_points_earn_reversed', true );
+                $delta           = $target_reversed - $already;
+                if ( $delta <= 0 ) {
+                    return 0;
+                }
+
+                // Never drive the balance negative; record only what we can claw back.
+                $balance = $this->get_user_balance( $user_id )->balance;
+                $reverse = (int) min( $delta, max( 0, $balance ) );
+                if ( $reverse > 0 ) {
+                    $this->add_points(
+                        $user_id,
+                        -1 * $reverse,
+                        'adjustment',
+                        [
+                            'context'  => 'order_refund_reversal',
+                            'order_id' => $order_id,
+                        ]
+                    );
+                }
+
+                $target->update_meta_data( '_wclr_points_earn_reversed', $already + $reverse );
                 $target->save();
                 return $reverse;
             },
@@ -1000,10 +1084,13 @@ class Points_Service {
         // Use atomic cache-based locking to prevent concurrent updates (race condition protection).
         // wp_cache_add() is atomic - it only sets the value if it doesn't exist, preventing race conditions.
         $lock_key = 'wclr_points_lock_' . $user_id;
-        $lock_timeout = 5; // 5 seconds max wait
+        // Doubles as the cache-lock attempt count (~100ms each, so ~0.5s total) and,
+        // further below, the MySQL named-lock wait in seconds.
+        $lock_timeout = 5;
         $lock_acquired = false;
 
-        // Try to acquire lock atomically (max 5 attempts with 100ms delay to avoid blocking).
+        // Try to acquire the cache lock atomically (up to $lock_timeout attempts,
+        // 100ms apart) to serialize concurrent requests within this worker.
         $attempts = 0;
         while ( ! $lock_acquired && $attempts < $lock_timeout ) {
             // wp_cache_add() is atomic: returns true if lock was acquired, false if already exists.
@@ -1037,12 +1124,16 @@ class Points_Service {
             $balance          = $this->get_user_balance( $user_id );
             $new_balance      = $balance->balance + $amount;
             $new_lifetime     = $balance->lifetime_points;
-            // Lifetime counts EARNED points only (matches recalc_lifetime_points_all).
-            // Admin/manual adjustments and system refund reversals/restorations are
-            // deliberately excluded so they cannot inflate tier eligibility with
-            // points the customer did not earn.
-            if ( $type === 'earn' && $amount > 0 ) {
+            // Lifetime tracks net EARNED points (matches recalc_lifetime_points_all):
+            // positive 'earn' rows add to it, and refund/cancel reversals of earned
+            // order points subtract from it, so a refunded sale no longer keeps a
+            // customer's tier eligibility inflated. Admin/manual adjustments and
+            // redemption-refund restorations are deliberately excluded so they can
+            // neither inflate nor deflate tiers with points the customer did not earn.
+            if ( 'earn' === $type && $amount > 0 ) {
                 $new_lifetime += $amount;
+            } elseif ( 'adjustment' === $type && $amount < 0 && 'order_refund_reversal' === ( $data['context'] ?? '' ) ) {
+                $new_lifetime = max( 0, $new_lifetime + $amount );
             }
 
             $old_tier = null;
@@ -1209,12 +1300,31 @@ class Points_Service {
     public function recalc_lifetime_points_all(): int {
         global $wpdb;
         $table   = $wpdb->prefix . 'wclr_points_ledger';
-        $results = $wpdb->get_results( $wpdb->prepare( "SELECT user_id, SUM(amount) AS total FROM {$table} WHERE type = %s AND amount > 0 GROUP BY user_id", 'earn' ), ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        // Net earned = positive 'earn' rows minus refund/cancel reversals of earned
+        // order points. Mirrors the live lifetime accounting in add_points().
+        $results = $wpdb->get_results( // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+            $wpdb->prepare(
+                "SELECT user_id, SUM(
+                        CASE
+                            WHEN type = 'earn' AND amount > 0 THEN amount
+                            WHEN type = 'adjustment' AND amount < 0 AND context = %s THEN amount
+                            ELSE 0
+                        END
+                    ) AS total
+                 FROM {$table}
+                 WHERE ( type = 'earn' AND amount > 0 )
+                    OR ( type = 'adjustment' AND context = %s )
+                 GROUP BY user_id",
+                'order_refund_reversal',
+                'order_refund_reversal'
+            ),
+            ARRAY_A
+        );
 
-        // Map of user_id => lifetime from ledger.
+        // Map of user_id => lifetime from ledger (floored at zero).
         $ledger_totals = [];
         foreach ( (array) $results as $row ) {
-            $ledger_totals[ (int) $row['user_id'] ] = (int) $row['total'];
+            $ledger_totals[ (int) $row['user_id'] ] = max( 0, (int) $row['total'] );
         }
 
         // Users who currently have lifetime meta set (so we can zero those with no earns).
@@ -1308,18 +1418,21 @@ class Points_Service {
         if ( $multiplier <= 1 ) {
             return 1.0;
         }
-        $now = current_time( 'timestamp' );
+        // Interpret the naive datetime-local window strings in the site timezone and
+        // compare against the real current time (current_time('timestamp') is deprecated).
+        $now = time();
+        $tz  = wp_timezone();
 
         if ( ! empty( $flash['start'] ) ) {
-            $start_ts = strtotime( $flash['start'] );
-            if ( $start_ts && $now < $start_ts ) {
+            $start = date_create( (string) $flash['start'], $tz );
+            if ( $start && $now < $start->getTimestamp() ) {
                 return 1.0;
             }
         }
 
         if ( ! empty( $flash['end'] ) ) {
-            $end_ts = strtotime( $flash['end'] );
-            if ( $end_ts && $now > $end_ts ) {
+            $end = date_create( (string) $flash['end'], $tz );
+            if ( $end && $now > $end->getTimestamp() ) {
                 return 1.0;
             }
         }
