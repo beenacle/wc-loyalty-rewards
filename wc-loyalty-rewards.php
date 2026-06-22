@@ -4,7 +4,7 @@
  * Plugin URI:  https://beenacle.com/
  * Description: Reusable loyalty and rewards system for WooCommerce with configurable earning, tiers, referrals, and redemption.
  * Version:     1.1.3
- * Author:      Beenacle Technologies
+ * Author:      Beenacle
  * Author URI:  https://beenacle.com/
  * Text Domain: wc-loyalty-rewards
  * Domain Path: /languages
