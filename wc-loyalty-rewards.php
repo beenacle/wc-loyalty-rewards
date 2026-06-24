@@ -32,19 +32,9 @@ if ( ! defined( 'WCLR_VERSION' ) ) {
     define( 'WCLR_VERSION', '1.1.3' );
 }
 
-// GitHub updates (no helper plugin needed).
-if ( file_exists( __DIR__ . '/vendor/autoload.php' ) ) {
-	require __DIR__ . '/vendor/autoload.php';
-
-	$uc = \YahnisElsts\PluginUpdateChecker\v5\PucFactory::buildUpdateChecker(
-		'https://github.com/beenacle/wc-loyalty-rewards/',
-		__FILE__,
-		'wc-loyalty-rewards'
-	);
-
-	// Use GitHub Release ZIP assets (recommended).
-	$uc->getVcsApi()->enableReleaseAssets();
-}
+// GitHub-Releases self-updater (shared across beenacle plugins).
+require_once __DIR__ . '/includes/GitHubUpdater.php';
+( new \Beenacle\WcLoyaltyRewards\GitHubUpdater( WCLR_PLUGIN_FILE, 'beenacle', 'wc-loyalty-rewards' ) )->register();
 
 // Simple PSR-4 style autoloader for this plugin.
 spl_autoload_register(
